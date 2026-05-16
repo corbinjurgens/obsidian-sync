@@ -16,36 +16,42 @@ Requires Python 3.11+ and `git` on your PATH.
 
 ## Quick Start
 
+Start with one manual sync before installing a daemon or login service:
+
 ```bash
-# Create a config file (interactive)
+# Create a config file interactively.
+# Writes ~/.config/obsidian-sync/config.yaml
 obsidian-sync config --init
 
-# Run a single sync cycle
+# Run a single sync cycle, then exit
 obsidian-sync sync
 
-# Start the daemon (foreground)
-obsidian-sync start
+# Check daemon status and the last log entry
+obsidian-sync status
+```
 
-# Start the daemon (background)
+If the one-off sync looks good, run the loop in the foreground while testing:
+
+```bash
+obsidian-sync start
+```
+
+Then choose background mode or service setup:
+
+```bash
 obsidian-sync start --daemon
 ```
 
 ## Commands
 
-| Command | Description |
-|---------|-------------|
-| `start` | Start the sync loop (`--daemon` to run in background) |
-| `stop` | Stop a running daemon |
-| `status` | Show daemon status and last log entry |
-| `sync` | Run one sync cycle, then exit |
-| `config` | Show current config (`--init` to create, `--edit` to open in $EDITOR) |
-| `log` | Show recent log entries (`--tail` to follow, `-n` for line count) |
-| `install` | Install as a system service (launchd on macOS, systemd on Linux) |
-| `uninstall` | Remove the system service |
-| `enable` | Enable service to start on login |
-| `disable` | Disable service from starting on login |
+| Workflow | Command |
+|----------|---------|
+| Create or inspect config | `obsidian-sync config --init`, `obsidian-sync config`, `obsidian-sync config --edit` |
+| Verify a one-off sync | `obsidian-sync sync`, then `obsidian-sync status` |
+| Run the loop yourself | `obsidian-sync start` or `obsidian-sync start --daemon` |
+| Manage the daemon/service | `obsidian-sync stop`, `install`, `enable`, `disable`, `uninstall`, `log` |
 
-All commands accept `--config PATH` to use a non-default config file and `--verbose` for debug output.
+All commands accept `--config PATH` to use a non-default config file and `--verbose` for debug output. See the [CLI reference](docs/reference/cli.md) for the full command table.
 
 ## Service Setup
 
@@ -79,40 +85,9 @@ obsidian-sync uninstall
 
 ## Configuration
 
-Config file location: `~/.config/obsidian-sync/config.yaml`
+`obsidian-sync config --init` creates `~/.config/obsidian-sync/config.yaml` interactively. The key values are the vault path, sync interval, pull strategy, remote, branch, commit template, log path, and lock path.
 
-Create one interactively with `obsidian-sync config --init`, or write it manually:
-
-```yaml
-vault_path: ~/obsidian-vault
-sync:
-  interval_seconds: 60
-  pull_strategy: rebase    # rebase | merge | ff-only
-  remote: origin
-  branch: main
-commit:
-  template: "{{date}} — Auto-sync completed [host={{hostname}}] [files={{numFiles}}] [changed={{files}}]"
-  date_format: "%Y-%m-%d %H:%M:%S"
-  list_files_in_body: true
-log:
-  path: ~/.local/state/obsidian-sync/sync.log
-  max_size_mb: 10
-lock_path: ~/.local/state/obsidian-sync/daemon.lock
-```
-
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `vault_path` | `~/obsidian-vault` | Path to your Obsidian vault git repo |
-| `sync.interval_seconds` | `60` | Seconds between sync cycles |
-| `sync.pull_strategy` | `rebase` | Git pull strategy (`rebase`, `merge`, or `ff-only`) |
-| `sync.remote` | `origin` | Git remote name |
-| `sync.branch` | `main` | Git branch name |
-| `commit.template` | *(see above)* | Commit message template with `{{date}}`, `{{hostname}}`, `{{numFiles}}`, `{{files}}` variables |
-| `commit.date_format` | `%Y-%m-%d %H:%M:%S` | strftime format for `{{date}}` |
-| `commit.list_files_in_body` | `true` | Include changed file list in commit body |
-| `log.path` | `~/.local/state/obsidian-sync/sync.log` | Log file location |
-| `log.max_size_mb` | `10` | Max log file size before rotation |
-| `lock_path` | `~/.local/state/obsidian-sync/daemon.lock` | PID lock file location |
+See [Configuration](docs/configuration.md) for the full example, option table, and commit-template variables.
 
 ## Behavior
 
