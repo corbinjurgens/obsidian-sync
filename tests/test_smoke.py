@@ -253,6 +253,52 @@ class TestObsidianDeferral:
 
 
 class TestSyncIdempotency:
+    @pytest.mark.parametrize("fetch_style", ["wildcard", "narrow"])
+    @pytest.mark.parametrize("strategy", ["rebase", "merge", "ff-only"])
+    def test_clean_retry_pushes_commit_after_failed_push(
+        self, vault: tuple[Path, Path, Path], tmp_path: Path, strategy: str, fetch_style: str
+    ) -> None:
+        local, bare, config_path = vault
+        _git(local, "remote", "rename", "origin", "backup")
+        _git(local, "branch", "-m", "notes")
+        _git(local, "push", "--set-upstream", "backup", "notes")
+        if fetch_style == "narrow":
+            _git(
+                local, "config", "remote.backup.fetch", "+refs/heads/main:refs/remotes/backup/main"
+            )
+            _git(local, "update-ref", "-d", "refs/remotes/backup/notes")
+        config = yaml.safe_load(config_path.read_text())
+        config["sync"].update(pull_strategy=strategy, remote="backup", branch="notes")
+        config_path.write_text(yaml.safe_dump(config))
+        initial_tip = _git(bare, "rev-parse", "refs/heads/notes").stdout.strip()
+        _git(local, "config", "remote.backup.pushurl", str(tmp_path / "missing.git"))
+        (local / "queued.md").write_text("Keep this note across a failed push\n")
+
+        failed = _cli(config_path, "sync")
+        assert failed.exit_code == 1, failed.output
+        assert "Push failed" in failed.output
+        unsent_tip = _git(local, "rev-parse", "HEAD").stdout.strip()
+        assert unsent_tip != initial_tip
+        assert _git(local, "status", "--porcelain").stdout == ""
+        assert _git(bare, "rev-parse", "refs/heads/notes").stdout.strip() == initial_tip
+        assert _git(local, "show", "HEAD:queued.md").stdout == (
+            "Keep this note across a failed push\n"
+        )
+
+        _git(local, "config", "--unset", "remote.backup.pushurl")
+        retried = _cli(config_path, "sync")
+        assert retried.exit_code == 0, retried.output
+        assert _git(local, "rev-parse", "HEAD").stdout.strip() == unsent_tip
+        assert _git(bare, "rev-parse", "refs/heads/notes").stdout.strip() == unsent_tip
+        if fetch_style == "wildcard":
+            assert _git(local, "rev-parse", "backup/notes").stdout.strip() == unsent_tip
+        else:
+            assert "backup/notes" not in _git(local, "branch", "-r").stdout
+        assert _git(bare, "rev-parse", "refs/heads/main").stdout.strip() == initial_tip
+        assert _git(bare, "show", "notes:queued.md").stdout == (
+            "Keep this note across a failed push\n"
+        )
+
     def test_second_sync_is_noop(self, vault: tuple[Path, Path, Path]) -> None:
         local, _bare, config_path = vault
         (local / "note.md").write_text("content\n")

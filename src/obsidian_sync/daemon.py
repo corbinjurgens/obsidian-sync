@@ -128,9 +128,14 @@ class SyncDaemon:
 
         # ff-only cannot have local commits before pull (would break fast-forward),
         # so it uses the original pull-first order.
-        if self.config.sync.pull_strategy == "ff-only":
-            return self._sync_pull_first(vault)
-        return self._sync_commit_first(vault)
+        try:
+            if self.config.sync.pull_strategy == "ff-only":
+                return self._sync_pull_first(vault)
+            return self._sync_commit_first(vault)
+        except GitError as e:
+            msg = f"Sync failed (will retry): {e}"
+            logger.warning(msg)
+            return SyncResult(synced=False, files_changed=0, message=msg, error=msg)
 
     def _sync_commit_first(self, vault: Path) -> SyncResult:
         """Commit → pull → push.  Used for rebase and merge strategies."""
@@ -167,7 +172,8 @@ class SyncDaemon:
 
         # Phase 3: Push if local is ahead of remote (covers both fresh commits
         # and previously-committed-but-not-pushed changes from failed pulls)
-        needs_push = committed or is_ahead(vault, self.config.sync.remote, self.config.sync.branch)
+        # Explicit pull always writes FETCH_HEAD, even with narrow/custom fetch refspecs.
+        needs_push = committed or is_ahead(vault, ref="FETCH_HEAD")
         if not needs_push:
             msg = "Working tree clean, nothing to sync"
             logger.info(msg)
@@ -208,16 +214,21 @@ class SyncDaemon:
             logger.warning(msg)
             return SyncResult(synced=False, files_changed=0, message=msg, error=msg)
 
-        if not is_dirty(vault):
+        committed = False
+        changed_files: list[str] = []
+        if is_dirty(vault):
+            changed_files = get_changed_files(vault)
+            add_all(vault)
+            commit_msg, body = self._build_commit(changed_files)
+            commit(vault, commit_msg, body=body)
+            logger.info("Committed: %s", commit_msg)
+            committed = True
+
+        needs_push = committed or is_ahead(vault, ref="FETCH_HEAD")
+        if not needs_push:
             msg = "Working tree clean, nothing to sync"
             logger.info(msg)
             return SyncResult(synced=True, files_changed=0, message=msg)
-
-        changed_files = get_changed_files(vault)
-        add_all(vault)
-        commit_msg, body = self._build_commit(changed_files)
-        commit(vault, commit_msg, body=body)
-        logger.info("Committed: %s", commit_msg)
 
         try:
             push(vault, self.config.sync.remote, self.config.sync.branch)

@@ -7,6 +7,7 @@ from unittest.mock import patch
 import pytest
 
 from obsidian_sync.git_ops import (
+    GitError,
     GitInterventionError,
     PullConflictError,
     PushError,
@@ -15,6 +16,7 @@ from obsidian_sync.git_ops import (
     ensure_sync_ready,
     get_changed_files,
     get_staged_files,
+    is_ahead,
     is_dirty,
     pull,
     push,
@@ -259,6 +261,44 @@ class TestCommit:
 
 
 class TestPull:
+    @pytest.mark.parametrize("strategy", ["merge", "ff-only"])
+    def test_selected_strategy_overrides_conflicting_git_defaults(
+        self, git_repo_pair: tuple[Path, Path], tmp_path: Path, strategy: str
+    ) -> None:
+        local, bare = git_repo_pair
+        other = tmp_path / "other"
+        _git(tmp_path, "clone", str(bare), str(other))
+        _git(other, "config", "user.email", "other@test.com")
+        _git(other, "config", "user.name", "Other User")
+        (other / "remote.md").write_text("Remote note\n")
+        _git(other, "add", "remote.md")
+        _git(other, "commit", "-m", "Remote note")
+        _git(other, "push", "origin", "main")
+        remote_tip = _git(bare, "rev-parse", "refs/heads/main").stdout.strip()
+
+        (local / "local.md").write_text("Local note\n")
+        _git(local, "add", "local.md")
+        _git(local, "commit", "-m", "Local note")
+        local_tip = _git(local, "rev-parse", "HEAD").stdout.strip()
+        _git(local, "config", "pull.rebase", "true")
+        _git(local, "config", "pull.ff", "only" if strategy == "merge" else "false")
+
+        if strategy == "merge":
+            result = pull(local, strategy="merge")
+            assert result.success is True
+            assert _git(local, "show", "-s", "--format=%P", "HEAD").stdout.split() == [
+                local_tip,
+                remote_tip,
+            ]
+            assert (local / "remote.md").read_text() == "Remote note\n"
+            assert (local / "local.md").read_text() == "Local note\n"
+        else:
+            with pytest.raises(GitError, match="git pull failed"):
+                pull(local, strategy="ff-only")
+            assert _git(local, "rev-parse", "HEAD").stdout.strip() == local_tip
+            assert not (local / "remote.md").exists()
+        assert _git(bare, "rev-parse", "refs/heads/main").stdout.strip() == remote_tip
+
     def test_no_changes(self, git_repo_pair: tuple[Path, Path]) -> None:
         local, _remote = git_repo_pair
         result = pull(local)
@@ -311,6 +351,18 @@ class TestPull:
 
 
 # --- push ---
+
+
+@pytest.mark.parametrize("returncode,output", [(128, ""), (0, "garbled"), (0, "-1")])
+def test_ahead_query_failure_is_never_clean_success(returncode: int, output: str) -> None:
+    with (
+        patch(
+            "obsidian_sync.git_ops._run_git",
+            return_value=subprocess.CompletedProcess([], returncode, output, "query failed"),
+        ),
+        pytest.raises(GitError),
+    ):
+        is_ahead(Path.cwd(), ref="FETCH_HEAD")
 
 
 class TestPush:

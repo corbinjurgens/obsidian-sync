@@ -54,7 +54,7 @@ Windows Python 3.13.15 and `pythonw.exe` are available. Earlier successful launc
 
 **Verify:** Run `uv run pytest tests/test_windows_service.py tests/test_windows_daemon.py tests/test_windows_task_integration.py tests/test_cli.py tests/test_config.py` using external temporary paths. Assert no fallback Git action, wrong-path stop, removal under uncertain state, or enabled inconsistent installation. Repeat the opt-in disposable scheduler test from a recorded non-elevated shell. Ruff and ty must pass. Keep the real vault out of the tests.
 
-### Task 2 — Preserve unresolved Git operations across restarts
+### Task 2 — Preserve unresolved Git operations across restarts — done 188cd9e8f28995dbe3f328cd00f65bfa70c9bf4c
 **Files:** `src/obsidian_sync/git_ops.py`, `src/obsidian_sync/daemon.py`, `tests/test_git_ops.py`, `tests/test_daemon.py`, `README.md`.
 **Depends on:** 1
 **Complexity:** judgment
@@ -69,7 +69,7 @@ Windows Python 3.13.15 and `pythonw.exe` are available. Earlier successful launc
 **Verify:** `uv run pytest tests/test_git_ops.py tests/test_daemon.py tests/test_smoke.py tests/test_e2e.py`. Divergent selected-merge history produces a merge commit despite `pull.rebase=true` and `pull.ff=only`. A clean retry sends the previously failed commit; it cannot report success while leaving that reproduced commit stranded locally.
 
 ### Task 5 — Keep Git failures quiet and retry with backoff
-**Files:** `src/obsidian_sync/daemon.py`, `tests/test_daemon.py`, `README.md`, `docs/reference/cli.md`.
+**Files:** `src/obsidian_sync/daemon.py`, `src/obsidian_sync/git_ops.py`, `tests/test_daemon.py`, `tests/test_git_ops.py`, `README.md`, `docs/reference/cli.md`.
 **Depends on:** 3
 **Complexity:** judgment
 **Do:** User amendment on 2026-11-06: keep the background service alive after pull/commit/push failures, without alerts or new UI. Use the existing Obsidian Git workflow for manual resolution, explicitly selected by the user. Preserve failure diagnostics in logs and the foreground command's failure exit status. Convert commit/staging/query Git failures into failed cycles rather than uncaught daemon termination. Retry at the configured interval after the first failure, doubling after consecutive failures up to max(configured interval, 15 minutes). Reset after a successful cycle. Deferral to running Obsidian is not a success and must not erase failure history; use ordinary app-deferral polling so opening/closing the app does not impose an extra long wait. Continue to refuse unresolved operations until manually resolved. Make stop responsive during backoff and preserve active Git work. No plugin integration, UI confirmation, automatic conflict repair, new configuration or auto-restart supervisor.

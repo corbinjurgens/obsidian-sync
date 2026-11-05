@@ -178,6 +178,13 @@ operation manually before a later cycle can sync. It never aborts, resets or
 completes an unfinished operation for you.
 Ordinary pull failures still retry on the next cycle.
 
+The selected pull strategy overrides Git's `pull.rebase` and `pull.ff` defaults:
+`merge` allows a merge commit for divergent history, and `ff-only` refuses it.
+After a successful pull, outstanding local commits are pushed even when there
+are no new edits, including with a narrow fetch configuration. The comparison
+uses the tip fetched by that pull; a failed comparison is a failed sync, not a
+clean result. A failed push keeps the local commit for a later sync attempt.
+
 Obsidian detection is app-wide and checked before each sync cycle. It does not
 coordinate an atomic handoff with the Obsidian Git plugin: opening Obsidian while
 a cycle is already running can overlap their Git operations. If you require a

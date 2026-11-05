@@ -139,7 +139,7 @@ def pull(
     elif strategy == "ff-only":
         args = ["pull", "--ff-only", remote, branch]
     else:
-        args = ["pull", remote, branch]
+        args = ["pull", "--no-rebase", "--ff", remote, branch]
 
     result = _run_git(repo_path, args)
     combined_output = result.stdout + result.stderr
@@ -153,12 +153,25 @@ def pull(
     return PullResult(success=True, conflict=False, message=combined_output.strip())
 
 
-def is_ahead(repo_path: Path, remote: str = "origin", branch: str = "main") -> bool:
-    """Check if local branch has commits not yet pushed to remote."""
-    result = _run_git(repo_path, ["rev-list", f"{remote}/{branch}..HEAD", "--count"])
+def is_ahead(
+    repo_path: Path,
+    remote: str = "origin",
+    branch: str = "main",
+    *,
+    ref: str | None = None,
+) -> bool:
+    """Compare HEAD with a tracking ref, or an explicitly fetched reference."""
+    reference = ref if ref is not None else f"{remote}/{branch}"
+    result = _run_git(repo_path, ["rev-list", f"{reference}..HEAD", "--count"])
     if result.returncode != 0:
-        return False
-    return int(result.stdout.strip()) > 0
+        raise GitError(f"Cannot compare outstanding commits: {result.stderr}")
+    try:
+        count = int(result.stdout.strip())
+    except ValueError as e:
+        raise GitError(f"Invalid outstanding commit count: {result.stdout!r}") from e
+    if count < 0:
+        raise GitError(f"Invalid outstanding commit count: {count}")
+    return count > 0
 
 
 def push(
