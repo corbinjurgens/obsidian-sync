@@ -5,12 +5,14 @@ import os
 import platform
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import click
 from rich.console import Console
 from rich.table import Table
 
+from obsidian_sync import windows_service
 from obsidian_sync.config import (
     DEFAULT_CONFIG_PATH,
     SyncConfig,
@@ -84,7 +86,7 @@ def start(ctx: click.Context, run_daemon: bool) -> None:
 
     if run_daemon:
         console.print(f"Starting daemon (vault: {config.vault_path})")
-        daemonize()
+        daemonize(ctx.obj["config_path"], verbose=ctx.obj["verbose"])
 
     d = SyncDaemon(config)
     try:
@@ -105,7 +107,7 @@ def stop(ctx: click.Context) -> None:
 
     d = SyncDaemon(config)
     if d.stop():
-        console.print("[green]Daemon stopped[/green]")
+        console.print("[green]Shutdown requested; daemon will stop after the current sync[/green]")
     else:
         raise click.ClickException("Failed to stop daemon")
 
@@ -143,7 +145,7 @@ def status(ctx: click.Context) -> None:
     table.add_row("Remote", f"{config.sync.remote}/{config.sync.branch}")
 
     if log_path.exists():
-        lines = log_path.read_text().strip().splitlines()
+        lines = log_path.read_text(encoding="utf-8").strip().splitlines()
         if lines:
             table.add_row("Last log", lines[-1])
 
@@ -183,9 +185,17 @@ def log(ctx: click.Context, tail: bool, since: str | None, lines: int) -> None:
         raise click.ClickException(f"Log file not found: {log_path}")
 
     if tail:
-        subprocess.run(["tail", "-f", str(log_path)], check=False)
+        with log_path.open(encoding="utf-8") as stream:
+            for line in stream.readlines()[-lines:]:
+                console.print(line.rstrip("\n"))
+            while True:
+                line = stream.readline()
+                if line:
+                    console.print(line.rstrip("\n"))
+                else:
+                    time.sleep(0.2)
     else:
-        all_lines = log_path.read_text().strip().splitlines()
+        all_lines = log_path.read_text(encoding="utf-8").strip().splitlines()
         for line in all_lines[-lines:]:
             console.print(line)
 
@@ -210,7 +220,7 @@ def config(ctx: click.Context, do_init: bool, do_edit: bool) -> None:
         return
 
     if do_edit:
-        editor = os.environ.get("EDITOR", "vim")
+        editor = os.environ.get("EDITOR", "notepad" if platform.system() == "Windows" else "vim")
         if not config_path.exists():
             msg = f"Config not found: {config_path}. Run 'config --init' first."
             raise click.ClickException(msg)
@@ -238,13 +248,17 @@ def config(ctx: click.Context, do_init: bool, do_edit: bool) -> None:
 @main.command()
 @click.pass_context
 def install(ctx: click.Context) -> None:
-    """Install as a system service (launchd on macOS, systemd on Linux)."""
+    """Install a login service (launchd, systemd or Windows Task Scheduler)."""
     system = platform.system()
 
     if system == "Darwin":
         _install_launchd()
     elif system == "Linux":
         _install_systemd()
+    elif system == "Windows":
+        windows_service.install_task(ctx.obj["config_path"])
+        console.print("[green]Installed: Windows login task (disabled)[/green]")
+        console.print("Run 'obsidian-sync enable' to start on login")
     else:
         raise click.ClickException(f"Unsupported platform: {system}")
 
@@ -259,6 +273,9 @@ def uninstall(ctx: click.Context) -> None:
         _uninstall_launchd()
     elif system == "Linux":
         _uninstall_systemd()
+    elif system == "Windows":
+        windows_service.uninstall_task()
+        console.print("[green]Service removed (Task Scheduler)[/green]")
     else:
         raise click.ClickException(f"Unsupported platform: {system}")
 
@@ -279,6 +296,9 @@ def enable(ctx: click.Context) -> None:
         subprocess.run(["systemctl", "--user", "enable", SYSTEMD_UNIT_NAME], check=True)
         subprocess.run(["systemctl", "--user", "start", SYSTEMD_UNIT_NAME], check=True)
         console.print("[green]Service enabled (systemd)[/green]")
+    elif system == "Windows":
+        windows_service.enable_task()
+        console.print("[green]Service enabled (Task Scheduler)[/green]")
     else:
         raise click.ClickException(f"Unsupported platform: {system}")
 
@@ -298,6 +318,9 @@ def disable(ctx: click.Context) -> None:
         subprocess.run(["systemctl", "--user", "stop", SYSTEMD_UNIT_NAME], check=False)
         subprocess.run(["systemctl", "--user", "disable", SYSTEMD_UNIT_NAME], check=False)
         console.print("[green]Service disabled (systemd)[/green]")
+    elif system == "Windows":
+        windows_service.disable_task()
+        console.print("[green]Service disabled (Task Scheduler)[/green]")
     else:
         raise click.ClickException(f"Unsupported platform: {system}")
 

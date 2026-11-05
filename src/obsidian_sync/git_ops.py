@@ -1,5 +1,6 @@
 """Git operations for obsidian-sync."""
 
+import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -39,6 +40,8 @@ def _run_git(repo_path: Path, args: list[str]) -> subprocess.CompletedProcess[st
         cwd=repo_path,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
     )
 
 

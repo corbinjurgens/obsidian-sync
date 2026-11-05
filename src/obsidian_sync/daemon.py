@@ -10,7 +10,9 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from obsidian_sync.config import SyncConfig, expand_paths
+import psutil
+
+from obsidian_sync.config import DEFAULT_CONFIG_PATH, SyncConfig, expand_paths
 from obsidian_sync.git_ops import (
     GitError,
     PullConflictError,
@@ -65,7 +67,7 @@ class SyncDaemon:
             self.config.sync.interval_seconds,
         )
         try:
-            while self._running:
+            while self._running and not self._stop_requested():
                 result = self.sync_cycle()
                 is_conflict = (
                     result.error
@@ -79,6 +81,7 @@ class SyncDaemon:
                 self._sleep(self.config.sync.interval_seconds)
         finally:
             self._release_lock()
+            self._running = False
             logger.info("Daemon stopped")
 
     def run_once(self) -> SyncResult:
@@ -226,6 +229,15 @@ class SyncDaemon:
 
     def _is_obsidian_running(self) -> bool:
         """Check if Obsidian is currently running."""
+        if platform.system() == "Windows":
+            try:
+                return any(
+                    (process.info["name"] or "").casefold() == "obsidian.exe"
+                    for process in psutil.process_iter(["name"])
+                )
+            except psutil.Error as e:
+                logger.warning("Cannot check Obsidian processes; deferring sync: %s", e)
+                return True
         if platform.system() == "Darwin":
             name = OBSIDIAN_PROCESS_NAME_MACOS
         else:
@@ -269,7 +281,27 @@ class SyncDaemon:
                     lock_path.unlink()
         except (ValueError, OSError) as e:
             logger.warning("Error releasing lock: %s", e)
+        try:
+            if self._stop_path.read_text(encoding="ascii").strip() == str(os.getpid()):
+                self._stop_path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            logger.warning("Error removing stop request: %s", e)
         self._lock_acquired = False
+
+    @property
+    def _stop_path(self) -> Path:
+        """Machine-local request file for cooperative shutdown on Windows."""
+        return Path(f"{self.config.lock_path}.stop")
+
+    def _stop_requested(self) -> bool:
+        if platform.system() != "Windows":
+            return False
+        try:
+            return self._stop_path.read_text(encoding="ascii").strip() == str(os.getpid())
+        except FileNotFoundError:
+            return False
 
     def _setup_signals(self) -> None:
         """Register signal handlers for graceful shutdown."""
@@ -285,16 +317,21 @@ class SyncDaemon:
     def _sleep(self, seconds: int) -> None:
         """Sleep in short intervals to allow signal handling."""
         end_time = time.monotonic() + seconds
-        while self._running and time.monotonic() < end_time:
+        while self._running and not self._stop_requested() and time.monotonic() < end_time:
             time.sleep(min(1.0, end_time - time.monotonic()))
 
     def stop(self) -> bool:
-        """Stop a running daemon by reading PID from lock file and sending SIGTERM."""
+        """Request shutdown after the current sync cycle finishes."""
         lock_path = Path(self.config.lock_path)
         if not lock_path.exists():
             return False
         try:
             pid = int(lock_path.read_text().strip())
+            if not _is_pid_alive(pid):
+                return False
+            if platform.system() == "Windows":
+                self._stop_path.write_text(str(pid), encoding="ascii")
+                return True
             os.kill(pid, signal.SIGTERM)
             return True
         except (ValueError, OSError, ProcessLookupError):
@@ -303,11 +340,7 @@ class SyncDaemon:
 
 def _is_pid_alive(pid: int) -> bool:
     """Check if a process with the given PID is still running."""
-    try:
-        os.kill(pid, 0)
-        return True
-    except OSError:
-        return False
+    return pid > 0 and psutil.pid_exists(pid)
 
 
 def setup_logging(log_path: str, verbose: bool = False) -> None:
@@ -315,7 +348,7 @@ def setup_logging(log_path: str, verbose: bool = False) -> None:
     log_file = Path(log_path)
     log_file.parent.mkdir(parents=True, exist_ok=True)
 
-    handlers: list[logging.Handler] = [logging.FileHandler(log_file)]
+    handlers: list[logging.Handler] = [logging.FileHandler(log_file, encoding="utf-8")]
     if verbose:
         handlers.append(logging.StreamHandler())
 
@@ -328,8 +361,27 @@ def setup_logging(log_path: str, verbose: bool = False) -> None:
     )
 
 
-def daemonize() -> None:
-    """Fork the process and detach from terminal (Unix double-fork)."""
+def daemonize(config_path: Path | None = None, verbose: bool = False) -> None:
+    """Detach from the terminal using a hidden child on Windows or a Unix fork."""
+    if sys.platform == "win32":
+        command = [
+            sys.executable,
+            "-m",
+            "obsidian_sync",
+            "--config",
+            str((config_path or DEFAULT_CONFIG_PATH.expanduser()).resolve()),
+        ]
+        if verbose:
+            command.append("--verbose")
+        command.append("start")
+        subprocess.Popen(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        sys.exit(0)
     pid = os.fork()
     if pid > 0:
         sys.exit(0)

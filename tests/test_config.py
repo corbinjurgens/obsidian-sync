@@ -103,16 +103,16 @@ class TestExpandPaths:
         assert "~" not in expanded.lock_path
         assert "~" not in expanded.log.path
 
-    def test_expand_paths_absolute_unchanged(self):
+    def test_expand_paths_absolute_unchanged(self, tmp_path):
         config = SyncConfig(
-            vault_path="/absolute/path",
-            lock_path="/absolute/lock",
-            log=LogSettings(path="/absolute/log"),
+            vault_path=str(tmp_path / "vault"),
+            lock_path=str(tmp_path / "lock"),
+            log=LogSettings(path=str(tmp_path / "log")),
         )
         expanded = expand_paths(config)
-        assert expanded.vault_path == "/absolute/path"
-        assert expanded.lock_path == "/absolute/lock"
-        assert expanded.log.path == "/absolute/log"
+        assert expanded.vault_path == config.vault_path
+        assert expanded.lock_path == config.lock_path
+        assert expanded.log.path == config.log.path
 
 
 class TestSaveConfig:

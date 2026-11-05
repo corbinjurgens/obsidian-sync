@@ -87,7 +87,7 @@ def load_config(path: Path | None = None) -> SyncConfig:
         path = DEFAULT_CONFIG_PATH.expanduser()
     if not path.exists():
         return SyncConfig()
-    raw = yaml.safe_load(path.read_text()) or {}
+    raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     defaults = SyncConfig()
     return SyncConfig(
         vault_path=raw.get("vault_path", defaults.vault_path),
@@ -116,4 +116,4 @@ def save_config(config: SyncConfig, path: Path) -> None:
     """Save config to YAML file, creating parent directories as needed."""
     path.parent.mkdir(parents=True, exist_ok=True)
     data = asdict(config)
-    path.write_text(yaml.dump(data, default_flow_style=False, sort_keys=False))
+    path.write_text(yaml.dump(data, default_flow_style=False, sort_keys=False), encoding="utf-8")

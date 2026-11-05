@@ -8,6 +8,7 @@ dependencies = [
     "click>=8.0",
     "rich>=13.0",
     "pyyaml>=6.0",
+    "psutil>=5.9",
 ]
 
 [project.scripts]

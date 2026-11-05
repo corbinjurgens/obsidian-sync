@@ -129,6 +129,27 @@ class TestLogCommand:
         assert result.exit_code != 0
         assert "Log file not found" in result.output
 
+    def test_tail_follows_without_external_commands(self, tmp_path: Path, monkeypatch) -> None:
+        config_path = _make_config_file(tmp_path)
+        log_path = tmp_path / "sync.log"
+        log_path.write_text("old entry\nlatest entry\n", encoding="utf-8")
+        waits = []
+
+        def wait(seconds):
+            if waits:
+                raise KeyboardInterrupt
+            waits.append(seconds)
+            with log_path.open("a", encoding="utf-8") as stream:
+                stream.write("new entry\n")
+
+        monkeypatch.setattr("obsidian_sync.cli.time.sleep", wait)
+        result = CliRunner().invoke(
+            main, ["--config", str(config_path), "log", "--tail", "-n", "1"]
+        )
+        assert "latest entry" in result.output
+        assert "new entry" in result.output
+        assert "old entry" not in result.output
+
 
 class TestConfigCommand:
     def test_help(self) -> None:

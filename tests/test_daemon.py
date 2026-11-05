@@ -110,12 +110,18 @@ class TestIsPidAlive:
 
 class TestObsidianDetection:
     def test_obsidian_not_running(self, daemon: SyncDaemon) -> None:
-        with patch("obsidian_sync.daemon.subprocess.run") as mock_run:
+        with (
+            patch("obsidian_sync.daemon.platform.system", return_value="Linux"),
+            patch("obsidian_sync.daemon.subprocess.run") as mock_run,
+        ):
             mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=1)
             assert daemon._is_obsidian_running() is False
 
     def test_obsidian_running(self, daemon: SyncDaemon) -> None:
-        with patch("obsidian_sync.daemon.subprocess.run") as mock_run:
+        with (
+            patch("obsidian_sync.daemon.platform.system", return_value="Darwin"),
+            patch("obsidian_sync.daemon.subprocess.run") as mock_run,
+        ):
             mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0)
             assert daemon._is_obsidian_running() is True
 
