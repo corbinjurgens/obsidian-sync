@@ -168,7 +168,7 @@ See [Configuration](docs/configuration.md) for the full example, option table, a
 - **Pull before push**: Pulls with rebase (by default) to keep history linear
 - **Obsidian detection**: Automatically defers syncing while Obsidian is open to avoid conflicts with the Obsidian Git plugin
 - **Lock file**: Uses a PID lock to prevent duplicate daemons
-- **Conflict handling**: Stops the daemon on merge conflicts (manual resolution required)
+- **Failure handling**: Keeps running after Git failures and retries with bounded backoff
 
 Before syncing, the daemon checks for unmerged index entries and unfinished merge,
 rebase, cherry-pick, revert or sequencer operations, including in linked worktrees.
@@ -176,7 +176,16 @@ If any are present, or Git state cannot be inspected, it skips the cycle without
 staging, committing, pulling or pushing. The daemon stays running; resolve the
 operation manually before a later cycle can sync. It never aborts, resets or
 completes an unfinished operation for you.
-Ordinary pull failures still retry on the next cycle.
+
+Failed Git inspections, staging, commits, pulls and pushes stay in the sync log
+without alerts. The first retry waits `sync.interval_seconds`; consecutive failed
+cycles double that delay up to 15 minutes (or the configured interval if longer).
+A successful cycle resets the delay. While Obsidian is open, the daemon checks
+at the ordinary interval without clearing failure history. Resolve conflicts or
+unfinished operations manually through your existing Obsidian Git workflow;
+after resolution and closing Obsidian, the same daemon can resume syncing.
+Stopping during backoff is responsive and still lets active Git work finish.
+The one-off `obsidian-sync sync` command continues to exit nonzero on failure.
 
 The selected pull strategy overrides Git's `pull.rebase` and `pull.ff` defaults:
 `merge` allows a merge commit for divergent history, and `ff-only` refuses it.

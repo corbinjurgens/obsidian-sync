@@ -1,15 +1,18 @@
 """Tests for the obsidian-sync daemon module."""
 
 import os
+import signal
 import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from click.testing import CliRunner
 
+from obsidian_sync.cli import main
 from obsidian_sync.config import SyncConfig
 from obsidian_sync.daemon import LockError, SyncDaemon, SyncResult, _is_pid_alive
-from obsidian_sync.git_ops import GitError, _run_git
+from obsidian_sync.git_ops import GitError, _run_git, push
 
 DEFAULT_BRANCH = "main"
 
@@ -194,7 +197,7 @@ class TestUnfinishedGitOperations:
                 result = daemon.run_once()
                 assert result.synced is False
                 assert result.intervention_required is True
-                assert result.stop_required is False
+                assert result.deferred is False
                 assert result.error is not None and "manual intervention" in result.error
                 assert _snapshot_git_state(local, bare) == before
 
@@ -206,7 +209,7 @@ class TestUnfinishedGitOperations:
             for _ in range(2):
                 result = daemon.run_once()
                 assert result.intervention_required is True
-                assert result.stop_required is False
+                assert result.deferred is False
                 assert result.error is not None and "Unfinished Git operation" in result.error
                 assert _snapshot_git_state(local, bare) == before
             stage.assert_not_called()
@@ -242,7 +245,7 @@ class TestUnfinishedGitOperations:
                 result = daemon.sync_cycle()
                 assert result.synced is False
                 assert result.intervention_required is True
-                assert result.stop_required is False
+                assert result.deferred is False
                 assert result.error is not None and "MERGE_HEAD" in result.error
                 assert _snapshot_git_state(local, bare) == before
 
@@ -281,7 +284,7 @@ class TestUnfinishedGitOperations:
         ):
             result = daemon.sync_cycle()
         assert result.intervention_required is True
-        assert result.stop_required is False
+        assert result.deferred is False
         assert result.synced is False
         assert result.error is not None and "manual intervention" in result.error
         stage.assert_not_called()
@@ -290,23 +293,33 @@ class TestUnfinishedGitOperations:
         push.assert_not_called()
         assert _snapshot_git_state(local, bare) == before
 
-    def test_loop_stops_on_structured_signal(self, daemon: SyncDaemon) -> None:
+    def test_loop_retries_after_inspection_failure(self, daemon: SyncDaemon) -> None:
+        daemon.config.sync.interval_seconds = 30
         result = SyncResult(
-            False, 0, "Inspection failed", error="Inspection failed", stop_required=True
+            False,
+            0,
+            "Inspection failed",
+            error="Inspection failed",
+            intervention_required=True,
         )
+        delays: list[int] = []
+
+        def wait(seconds: int) -> None:
+            delays.append(seconds)
+            if len(delays) == 2:
+                daemon._running = False
+
         with (
             patch.object(daemon, "_setup_signals"),
             patch.object(daemon, "_acquire_lock"),
             patch.object(daemon, "_release_lock") as release,
             patch.object(daemon, "_stop_requested", return_value=False),
             patch.object(daemon, "sync_cycle", return_value=result) as sync,
-            patch.object(daemon, "_sleep") as sleep,
-            pytest.raises(SystemExit) as error,
+            patch.object(daemon, "_sleep", side_effect=wait),
         ):
             daemon.run()
-        assert error.value.code == 1
-        sync.assert_called_once()
-        sleep.assert_not_called()
+        assert sync.call_count == 2
+        assert delays == [30, 60]
         release.assert_called_once()
         assert daemon._running is False
 
@@ -498,7 +511,7 @@ class TestSyncCycle:
         assert result.synced is False
         assert result.error is not None
         assert "conflict" in result.error.lower()
-        assert result.stop_required is True
+        assert result.intervention_required is True
 
         # A restarted daemon must preserve the unresolved operation from the first cycle.
         before = _snapshot_git_state(local, bare)
@@ -531,3 +544,289 @@ class TestRunOnce:
             result = daemon.run_once()
         assert result.synced is True
         assert result.files_changed == 1
+
+
+class TestRetryBackoff:
+    @pytest.mark.parametrize(
+        "interval,outcomes,expected",
+        [
+            (
+                30,
+                "ffffffffsff",
+                [30, 60, 120, 240, 480, 900, 900, 900, 30, 30, 60],
+            ),
+            (1000, "fffsf", [1000, 1000, 1000, 1000, 1000]),
+            (30, "fffddfsf", [30, 60, 120, 30, 30, 240, 30, 30]),
+        ],
+    )
+    def test_delays_cap_reset_and_preserve_history_during_deferral(
+        self, tmp_path: Path, interval: int, outcomes: str, expected: list[int]
+    ) -> None:
+        daemon = SyncDaemon(
+            SyncConfig(vault_path=str(tmp_path), lock_path=str(tmp_path / "daemon.lock"))
+        )
+        daemon.config.sync.interval_seconds = interval
+        results = {
+            "f": SyncResult(False, 0, "Git failed", error="Git failed"),
+            "s": SyncResult(True, 0, "Clean"),
+            "d": SyncResult(False, 0, "Obsidian running", deferred=True),
+        }
+        delays: list[int] = []
+
+        def wait(seconds: int) -> None:
+            assert Path(daemon.config.lock_path).exists()
+            delays.append(seconds)
+            if len(delays) == len(outcomes):
+                daemon._running = False
+
+        with (
+            patch.object(daemon, "_setup_signals"),
+            patch.object(daemon, "_stop_requested", return_value=False),
+            patch.object(
+                daemon, "sync_cycle", side_effect=[results[key] for key in outcomes]
+            ) as sync,
+            patch.object(daemon, "_sleep", side_effect=wait),
+        ):
+            daemon.run()
+        assert delays == expected
+        assert sync.call_count == len(outcomes)
+        assert not Path(daemon.config.lock_path).exists()
+        assert daemon._running is False
+
+    def test_signal_stops_during_backoff(self, tmp_path: Path) -> None:
+        daemon = SyncDaemon(
+            SyncConfig(vault_path=str(tmp_path), lock_path=str(tmp_path / "daemon.lock"))
+        )
+        daemon.config.sync.interval_seconds = 900
+        elapsed = 0.0
+
+        def wait(seconds: float) -> None:
+            nonlocal elapsed
+            elapsed += seconds
+            daemon._handle_signal(signal.SIGTERM, None)
+
+        with (
+            patch.object(daemon, "_setup_signals"),
+            patch.object(daemon, "_stop_requested", return_value=False),
+            patch.object(
+                daemon, "sync_cycle", return_value=SyncResult(False, 0, "Failed", error="Failed")
+            ) as sync,
+            patch("obsidian_sync.daemon.time.monotonic", side_effect=lambda: elapsed),
+            patch("obsidian_sync.daemon.time.sleep", side_effect=wait),
+        ):
+            daemon.run()
+        assert elapsed == 1.0
+        sync.assert_called_once()
+        assert not Path(daemon.config.lock_path).exists()
+
+    def test_cooperative_request_stops_during_backoff(self, tmp_path: Path) -> None:
+        daemon = SyncDaemon(
+            SyncConfig(vault_path=str(tmp_path), lock_path=str(tmp_path / "daemon.lock"))
+        )
+        daemon.config.sync.interval_seconds = 900
+        elapsed = 0.0
+
+        def wait(seconds: float) -> None:
+            nonlocal elapsed
+            elapsed += seconds
+            assert daemon.stop() is True
+
+        with (
+            patch.object(daemon, "_setup_signals"),
+            patch("obsidian_sync.daemon.platform.system", return_value="Windows"),
+            patch.object(
+                daemon, "sync_cycle", return_value=SyncResult(False, 0, "Failed", error="Failed")
+            ) as sync,
+            patch("obsidian_sync.daemon.time.monotonic", side_effect=lambda: elapsed),
+            patch("obsidian_sync.daemon.time.sleep", side_effect=wait),
+        ):
+            daemon.run()
+        assert elapsed == 1.0
+        sync.assert_called_once()
+        assert not Path(daemon.config.lock_path).exists()
+        assert not daemon._stop_path.exists()
+
+    def test_stop_during_active_git_finishes_cycle(
+        self, daemon: SyncDaemon, vault_with_remote: tuple[Path, Path]
+    ) -> None:
+        local, bare = vault_with_remote
+        (local / "note.md").write_text("Keep active Git work\n")
+
+        def finish_push(repo: Path, remote: str, branch: str) -> object:
+            daemon._handle_signal(signal.SIGTERM, None)
+            assert Path(daemon.config.lock_path).exists()
+            return push(repo, remote, branch)
+
+        with (
+            patch.object(daemon, "_setup_signals"),
+            patch.object(daemon, "_stop_requested", return_value=False),
+            patch.object(daemon, "_is_obsidian_running", return_value=False),
+            patch("obsidian_sync.daemon.push", side_effect=finish_push) as pushed,
+        ):
+            daemon.run()
+        pushed.assert_called_once()
+        assert _git(bare, "show", "main:note.md").stdout == "Keep active Git work\n"
+        assert _git(local, "rev-parse", "HEAD").stdout == _git(bare, "rev-parse", "main").stdout
+        assert not Path(daemon.config.lock_path).exists()
+
+
+class TestFailureRecovery:
+    @pytest.mark.parametrize(
+        "operation", ["add", "commit", "pull", "push", "status", "changed", "ahead"]
+    )
+    def test_transient_failure_retries_without_restart(
+        self, daemon: SyncDaemon, vault_with_remote: tuple[Path, Path], operation: str
+    ) -> None:
+        local, bare = vault_with_remote
+        initial_head = _git(local, "rev-parse", "HEAD").stdout
+        (local / "note.md").write_text("Retained through failure\n")
+        if operation == "ahead":
+            _git(local, "add", "note.md")
+            _git(local, "commit", "-m", "Outstanding note")
+        fail = True
+        delays: list[int] = []
+        results: list[SyncResult] = []
+        daemon.config.sync.interval_seconds = 30
+        sync_cycle = daemon.sync_cycle
+
+        def cycle() -> SyncResult:
+            result = sync_cycle()
+            results.append(result)
+            return result
+
+        def git(repo: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
+            target = {
+                "status": ["status", "--porcelain"],
+                "changed": ["status", "--porcelain", "-u"],
+                "ahead": ["rev-list", "FETCH_HEAD..HEAD", "--count"],
+            }.get(operation)
+            if fail and (args == target if target is not None else args[0] == operation):
+                return subprocess.CompletedProcess(args, 128, "", "Injected transient Git failure")
+            return _run_git(repo, args)
+
+        def wait(seconds: int) -> None:
+            nonlocal fail
+            delays.append(seconds)
+            assert daemon._running is True
+            assert Path(daemon.config.lock_path).exists()
+            if fail:
+                assert results[-1].synced is False
+                assert results[-1].error is not None
+                assert "Injected transient Git failure" in results[-1].error
+                assert _git(bare, "rev-parse", "main").stdout == initial_head
+                assert (local / "note.md").read_text() == "Retained through failure\n"
+                assert not _git(local, "ls-files", "--unmerged").stdout
+                staged = _git(local, "diff", "--cached", "--name-only").stdout
+                assert staged == ("note.md\n" if operation == "commit" else "")
+                head = _git(local, "rev-parse", "HEAD").stdout
+                if operation in {"pull", "push", "ahead"}:
+                    assert head != initial_head
+                else:
+                    assert head == initial_head
+                fail = False
+            else:
+                assert results[-1].synced is True
+                assert results[-1].error is None
+                assert _git(local, "status", "--porcelain").stdout == ""
+                assert _git(bare, "show", "main:note.md").stdout == "Retained through failure\n"
+                assert (
+                    _git(local, "rev-parse", "HEAD").stdout
+                    == _git(bare, "rev-parse", "main").stdout
+                )
+                daemon._running = False
+
+        with (
+            patch.object(daemon, "_setup_signals"),
+            patch.object(daemon, "_stop_requested", return_value=False),
+            patch.object(daemon, "_is_obsidian_running", return_value=False),
+            patch.object(daemon, "sync_cycle", side_effect=cycle),
+            patch("obsidian_sync.git_ops._run_git", side_effect=git),
+            patch.object(daemon, "_sleep", side_effect=wait),
+        ):
+            daemon.run()
+        assert delays == [30, 30]
+        assert not Path(daemon.config.lock_path).exists()
+
+    def test_conflict_refuses_mutation_then_resumes_after_manual_resolution(
+        self, daemon: SyncDaemon, vault_with_remote: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        local, bare = vault_with_remote
+        other = tmp_path / "other"
+        _git(tmp_path, "clone", str(bare), str(other))
+        _git(other, "config", "user.email", "other@test.com")
+        _git(other, "config", "user.name", "Other")
+        (other / "README.md").write_text("# Remote Vault\n")
+        _git(other, "add", "README.md")
+        _git(other, "commit", "-m", "Remote change")
+        _git(other, "push", "origin", "main")
+        remote_head = _git(bare, "rev-parse", "main").stdout
+        (local / "README.md").write_text("# Local Vault\n")
+        daemon.config.sync.interval_seconds = 30
+        delays: list[int] = []
+        unresolved: dict[str, object] = {}
+        results: list[SyncResult] = []
+        sync_cycle = daemon.sync_cycle
+
+        def cycle() -> SyncResult:
+            result = sync_cycle()
+            results.append(result)
+            return result
+
+        def wait(seconds: int) -> None:
+            nonlocal unresolved
+            delays.append(seconds)
+            assert daemon._running is True
+            if len(delays) == 1:
+                assert results[-1].synced is False
+                assert results[-1].intervention_required is True
+                assert results[-1].error is not None and "Pull conflict" in results[-1].error
+                assert _git(local, "ls-files", "--unmerged").stdout
+                assert _git(bare, "rev-parse", "main").stdout == remote_head
+                unresolved = _snapshot_git_state(local, bare)
+            elif len(delays) == 2:
+                assert results[-1].synced is False
+                assert results[-1].intervention_required is True
+                assert results[-1].error is not None and "manual intervention" in results[-1].error
+                assert _snapshot_git_state(local, bare) == unresolved
+                (local / "README.md").write_text("# Manually resolved Vault\n")
+                _git(local, "add", "README.md")
+                _git(local, "-c", "core.editor=true", "rebase", "--continue")
+            else:
+                assert results[-1].synced is True
+                assert results[-1].error is None
+                assert _git(bare, "show", "main:README.md").stdout == "# Manually resolved Vault\n"
+                assert (
+                    _git(local, "rev-parse", "HEAD").stdout
+                    == _git(bare, "rev-parse", "main").stdout
+                )
+                daemon._running = False
+
+        with (
+            patch.object(daemon, "_setup_signals"),
+            patch.object(daemon, "_stop_requested", return_value=False),
+            patch.object(daemon, "_is_obsidian_running", return_value=False),
+            patch.object(daemon, "sync_cycle", side_effect=cycle),
+            patch.object(daemon, "_sleep", side_effect=wait),
+        ):
+            daemon.run()
+        assert delays == [30, 60, 30]
+        assert not Path(daemon.config.lock_path).exists()
+
+    @pytest.mark.parametrize(
+        "operation",
+        ["add_all", "commit", "pull", "push", "is_dirty", "get_changed_files", "is_ahead"],
+    )
+    def test_foreground_git_failure_exits_nonzero(
+        self, daemon_config: SyncConfig, operation: str
+    ) -> None:
+        (Path(daemon_config.vault_path) / "note.md").write_text("Foreground failure\n")
+        with (
+            patch("obsidian_sync.cli._load_and_expand", return_value=daemon_config),
+            patch("obsidian_sync.cli.setup_logging"),
+            patch.object(SyncDaemon, "_is_obsidian_running", return_value=False),
+            patch("obsidian_sync.daemon.is_dirty", return_value=operation != "is_ahead"),
+            patch(f"obsidian_sync.daemon.{operation}", side_effect=GitError("Injected failure")),
+        ):
+            result = CliRunner().invoke(main, ["sync"])
+        assert result.exit_code == 1
+        assert "Injected failure" in result.output

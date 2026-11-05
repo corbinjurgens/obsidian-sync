@@ -13,6 +13,13 @@ automatic startup at login, use `install` followed by `enable`.
 Detached launch submission does not verify startup or sync health. Startup output
 goes to `%LOCALAPPDATA%\obsidian-sync\windows-startup.log`.
 
+Git failures keep the loop running and are recorded in the sync log without
+alerts. The first retry waits the configured sync interval; consecutive failures
+double the wait up to 15 minutes, or the configured interval when longer. A
+successful cycle resets backoff. Obsidian deferral uses ordinary interval polling
+and preserves failure history. Resolve unfinished Git operations manually through
+the existing Obsidian Git workflow before syncing can resume.
+
 ```bash
 obsidian-sync start           # foreground
 obsidian-sync start --daemon  # background
@@ -40,6 +47,7 @@ obsidian-sync status
 ### `obsidian-sync sync`
 
 Run one sync cycle (stage, commit, pull, push), then exit.
+Failure exits with a nonzero status; this command does not wait for a retry.
 
 ```bash
 obsidian-sync sync

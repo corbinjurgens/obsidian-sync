@@ -39,14 +39,17 @@ class PushError(GitError):
 
 def _run_git(repo_path: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
     """Run a git command in the repo directory. Returns completed process."""
-    return subprocess.run(
-        ["git", *args],
-        cwd=repo_path,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
-    )
+    try:
+        return subprocess.run(
+            ["git", *args],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+        )
+    except (OSError, UnicodeError, subprocess.SubprocessError) as e:
+        raise GitError(f"Cannot run git {args[0]}: {e}") from e
 
 
 def ensure_sync_ready(repo_path: Path) -> None:
@@ -79,13 +82,17 @@ def ensure_sync_ready(repo_path: Path) -> None:
             raise GitInterventionError(
                 f"Unfinished Git operation ({state}) requires manual intervention"
             )
-    except (OSError, UnicodeError, subprocess.SubprocessError) as e:
+    except GitInterventionError:
+        raise
+    except (GitError, OSError, UnicodeError, subprocess.SubprocessError) as e:
         raise GitInterventionError(f"Cannot inspect Git state: {e}") from e
 
 
 def is_dirty(repo_path: Path) -> bool:
     """Check working tree for changes (modified, staged, or untracked)."""
     result = _run_git(repo_path, ["status", "--porcelain"])
+    if result.returncode != 0:
+        raise GitError(f"Cannot inspect working tree: {result.stderr}")
     return bool(result.stdout.strip())
 
 
@@ -96,6 +103,8 @@ def get_changed_files(repo_path: Path) -> list[str]:
     rather than collapsing them into directory entries.
     """
     result = _run_git(repo_path, ["status", "--porcelain", "-u"])
+    if result.returncode != 0:
+        raise GitError(f"Cannot list changed files: {result.stderr}")
     files: list[str] = []
     for line in result.stdout.splitlines():
         if line.strip():
@@ -107,6 +116,8 @@ def get_changed_files(repo_path: Path) -> list[str]:
 def get_staged_files(repo_path: Path) -> list[str]:
     """List files in the staging area."""
     result = _run_git(repo_path, ["diff", "--cached", "--name-only"])
+    if result.returncode != 0:
+        raise GitError(f"Cannot list staged files: {result.stderr}")
     return [f for f in result.stdout.splitlines() if f.strip()]
 
 

@@ -61,7 +61,7 @@ Windows Python 3.13.15 and `pythonw.exe` are available. Earlier successful launc
 **Do:** Add a preflight before staging/commit in both strategies. Refuse unmerged index entries and active merge, rebase, cherry-pick, revert and sequencer state, using Git-resolved paths including worktrees. A failed query must refuse mutation. Return a failed cycle requiring manual intervention; never abort, reset or finish the operation automatically. The user's 2026-11-06 amendment replaces permanent loop shutdown with quiet backoff in task 5. Add real-Git regressions comparing files, index, HEAD and remote before/after a second invocation against unresolved state, including a staged but unfinished operation. Keep this responsibility in Git/daemon helpers.
 **Verify:** `uv run pytest tests/test_git_ops.py tests/test_daemon.py`. The second invocation performs no staging, commit or push, leaves unresolved content/index unchanged, and reports intervention. Query failure also performs no mutation. Normal dirty and clean repositories still sync.
 
-### Task 3 — Honor selected Git strategy and retry unsent commits
+### Task 3 — Honor selected Git strategy and retry unsent commits — done 746f615fc9bd01473b8e0fe5d2a4bb2ffe7f2e60
 **Files:** `src/obsidian_sync/git_ops.py`, `src/obsidian_sync/daemon.py`, `tests/test_git_ops.py`, `tests/test_daemon.py`, `tests/test_smoke.py`, `README.md`.
 **Depends on:** 2
 **Complexity:** judgment

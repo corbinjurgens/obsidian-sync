@@ -47,7 +47,6 @@ class SyncResult:
     message: str
     deferred: bool = False
     error: str | None = None
-    stop_required: bool = False
     intervention_required: bool = False
 
 
@@ -73,14 +72,22 @@ class SyncDaemon:
             self.config.vault_path,
             self.config.sync.interval_seconds,
         )
+        interval = self.config.sync.interval_seconds
+        retry_delay = interval
+        max_retry_delay = max(interval, 15 * 60)
         try:
             while self._running and not self._stop_requested():
                 result = self.sync_cycle()
-                if result.stop_required:
-                    logger.error("Manual intervention required, stopping daemon: %s", result.error)
-                    sys.exit(1)
-                logger.info("Next sync in %d seconds", self.config.sync.interval_seconds)
-                self._sleep(self.config.sync.interval_seconds)
+                if result.deferred:
+                    delay = interval
+                elif result.synced:
+                    retry_delay = interval
+                    delay = interval
+                else:
+                    delay = retry_delay
+                    retry_delay = min(retry_delay * 2, max_retry_delay)
+                logger.info("Next sync in %d seconds", delay)
+                self._sleep(delay)
         except Exception:
             logger.exception("Daemon failed")
             raise
@@ -163,7 +170,7 @@ class SyncDaemon:
             msg = f"Pull conflict: {e}"
             logger.error(msg)
             return SyncResult(
-                synced=False, files_changed=0, message=msg, error=msg, stop_required=True
+                synced=False, files_changed=0, message=msg, error=msg, intervention_required=True
             )
         except GitError as e:
             msg = f"Pull failed (will retry): {e}"
@@ -207,7 +214,7 @@ class SyncDaemon:
             msg = f"Pull conflict: {e}"
             logger.error(msg)
             return SyncResult(
-                synced=False, files_changed=0, message=msg, error=msg, stop_required=True
+                synced=False, files_changed=0, message=msg, error=msg, intervention_required=True
             )
         except GitError as e:
             msg = f"Pull failed (will retry): {e}"

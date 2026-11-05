@@ -1,6 +1,7 @@
 """Tests for git operations using real temporary git repositories."""
 
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import patch
 
@@ -42,6 +43,55 @@ def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
 
 
 DEFAULT_BRANCH = "main"
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        FileNotFoundError("Git unavailable"),
+        PermissionError("Access denied"),
+        UnicodeDecodeError("utf-8", b"\xff", 0, 1, "Invalid output"),
+        subprocess.SubprocessError("Git subprocess failed"),
+    ],
+)
+@pytest.mark.parametrize(
+    "operation",
+    [
+        is_dirty,
+        get_changed_files,
+        get_staged_files,
+        add_all,
+        pytest.param(lambda path: commit(path, "Test commit"), id="commit"),
+        pull,
+        push,
+        is_ahead,
+        ensure_sync_ready,
+    ],
+)
+def test_git_launch_and_decode_failures_use_git_error_boundary(
+    tmp_path: Path, error: Exception, operation: Callable[[Path], object]
+) -> None:
+    with (
+        patch("obsidian_sync.git_ops.subprocess.run", side_effect=error),
+        pytest.raises(GitError, match="Cannot") as caught,
+    ):
+        operation(tmp_path)
+    if operation is ensure_sync_ready:
+        assert isinstance(caught.value, GitInterventionError)
+
+
+@pytest.mark.parametrize("query", [is_dirty, get_changed_files, get_staged_files])
+def test_unsuccessful_inspection_is_never_empty_success(
+    tmp_path: Path, query: Callable[[Path], object]
+) -> None:
+    with (
+        patch(
+            "obsidian_sync.git_ops._run_git",
+            return_value=subprocess.CompletedProcess([], 128, "", "Inspection failed"),
+        ),
+        pytest.raises(GitError, match="Inspection failed"),
+    ):
+        query(tmp_path)
 
 
 @pytest.fixture
