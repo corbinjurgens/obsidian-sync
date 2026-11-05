@@ -1,7 +1,7 @@
 # Execution plan: Obsidian sync Windows lifecycle cleanup
 
 ## Goal
-Make the existing Windows port ready for a controlled real-vault trial: installed commands address the correct daemon despite configuration damage, hidden failures are observable, and Git cannot publish unresolved conflict content or silently disregard its selected strategy. Keep the existing daemon and per-user Task Scheduler architecture. This plan has not been executed.
+Make the existing Windows port ready for a controlled real-vault trial: installed commands address the correct daemon despite configuration damage, hidden failures are observable, and Git cannot publish unresolved conflict content or silently disregard its selected strategy. Keep the existing daemon and per-user Task Scheduler architecture. Execution is in progress; landed tasks carry their commit below.
 
 ## Change scope
 Intent: Close verified lifecycle and data-preservation defects found while reviewing Windows support.
@@ -37,7 +37,7 @@ Windows Python 3.13.15 and `pythonw.exe` are available. Earlier successful launc
 
 ## Tasks
 
-### Task 1 — Bind installed Windows control and failure reporting
+### Task 1 — Bind installed Windows control and failure reporting — done 7dac2edabe10b6b08ca1f1e1be52e7c609f33827
 **Files:** `src/obsidian_sync/windows_service.py`, `src/obsidian_sync/cli.py`, `src/obsidian_sync/daemon.py`, `src/obsidian_sync/config.py`, `tests/test_windows_service.py`, `tests/test_windows_daemon.py`, `tests/test_windows_task_integration.py`, `tests/test_cli.py`, `README.md`, `docs/reference/cli.md`.
 **Depends on:** none
 **Complexity:** judgment
@@ -58,7 +58,7 @@ Windows Python 3.13.15 and `pythonw.exe` are available. Earlier successful launc
 **Files:** `src/obsidian_sync/git_ops.py`, `src/obsidian_sync/daemon.py`, `tests/test_git_ops.py`, `tests/test_daemon.py`, `README.md`.
 **Depends on:** 1
 **Complexity:** judgment
-**Do:** Add a preflight before staging/commit in both strategies. Refuse unmerged index entries and active merge, rebase, cherry-pick, revert and sequencer state, using Git-resolved paths including worktrees. A failed query must refuse mutation. Report manual intervention and stop the loop; never abort, reset or finish the operation automatically. Add real-Git regressions comparing files, index, HEAD and remote before/after a second invocation against unresolved state, including a staged but unfinished operation. Keep this responsibility in Git/daemon helpers.
+**Do:** Add a preflight before staging/commit in both strategies. Refuse unmerged index entries and active merge, rebase, cherry-pick, revert and sequencer state, using Git-resolved paths including worktrees. A failed query must refuse mutation. Return a failed cycle requiring manual intervention; never abort, reset or finish the operation automatically. The user's 2026-11-06 amendment replaces permanent loop shutdown with quiet backoff in task 5. Add real-Git regressions comparing files, index, HEAD and remote before/after a second invocation against unresolved state, including a staged but unfinished operation. Keep this responsibility in Git/daemon helpers.
 **Verify:** `uv run pytest tests/test_git_ops.py tests/test_daemon.py`. The second invocation performs no staging, commit or push, leaves unresolved content/index unchanged, and reports intervention. Query failure also performs no mutation. Normal dirty and clean repositories still sync.
 
 ### Task 3 — Honor selected Git strategy and retry unsent commits
@@ -68,9 +68,16 @@ Windows Python 3.13.15 and `pythonw.exe` are available. Earlier successful launc
 **Do:** Explicitly select merge with `--no-rebase --ff`, including divergent history despite opposing `pull.rebase`/`pull.ff` defaults. Keep `ff-only` explicit. Push outstanding commits in the pull-first path even without fresh edits, reusing the existing ahead/push primitives and preserving pull-before-push. Add real-repository tests for opposing defaults and failed-push retry that compare local/remote tips. Preserve the selected strategy and remote.
 **Verify:** `uv run pytest tests/test_git_ops.py tests/test_daemon.py tests/test_smoke.py tests/test_e2e.py`. Divergent selected-merge history produces a merge commit despite `pull.rebase=true` and `pull.ff=only`. A clean retry sends the previously failed commit; it cannot report success while leaving that reproduced commit stranded locally.
 
+### Task 5 — Keep Git failures quiet and retry with backoff
+**Files:** `src/obsidian_sync/daemon.py`, `tests/test_daemon.py`, `README.md`, `docs/reference/cli.md`.
+**Depends on:** 3
+**Complexity:** judgment
+**Do:** User amendment on 2026-11-06: keep the background service alive after pull/commit/push failures, without alerts or new UI. Use the existing Obsidian Git workflow for manual resolution, explicitly selected by the user. Preserve failure diagnostics in logs and the foreground command's failure exit status. Convert commit/staging/query Git failures into failed cycles rather than uncaught daemon termination. Retry at the configured interval after the first failure, doubling after consecutive failures up to max(configured interval, 15 minutes). Reset after a successful cycle. Deferral to running Obsidian is not a success and must not erase failure history; use ordinary app-deferral polling so opening/closing the app does not impose an extra long wait. Continue to refuse unresolved operations until manually resolved. Make stop responsive during backoff and preserve active Git work. No plugin integration, UI confirmation, automatic conflict repair, new configuration or auto-restart supervisor.
+**Verify:** Unit tests with controlled time cover pull/commit/push/query failures, consecutive capped retry delays, reset on success, Obsidian deferral, unresolved-state no mutation and stop during backoff. Real-Git test demonstrates recovery after a transient failure/manual resolution without restarting the daemon. Existing foreground failure status remains nonzero. Run daemon/Git/smoke suites.
+
 ### Task 4 — Verify real scheduled Git and platform compatibility
 **Files:** `tests/test_windows_task_integration.py`, `tests/test_windows_daemon.py`, `.github/workflows/tests.yml`, `README.md`, `docs/reference/cli.md`.
-**Depends on:** 3
+**Depends on:** 5
 **Complexity:** judgment
 **Do:** Extend opt-in scheduled tests to use a disposable vault and bare remote. Gate a real push with a controllable receive hook. Request disable during the push; timeout must preserve the disabled registration and metadata while Git stays alive. Release the gate, verify remote delivery and daemon exit, then retry uninstall. Use a unique test task and release its own gate in finally before cleanup. Exercise early startup failure through real launch reporting. Add runtime CI coverage for Python 3.11 and 3.13 on Windows, Linux and macOS. Keep task registration opt-in. Update acceptance documentation with actual evidence and explicit unexecuted checks.
 **Verify:** In a recorded non-elevated Windows shell set `OBSIDIAN_SYNC_TEST_TASKS=1` and run scheduled tests. Demonstrate real push completion despite pending shutdown, no subsequent cycle, and removal of only the disposable task. Run the complete suite, Ruff, ty and strict docs build. Require successful stated-platform CI runs before claiming Unix runtime coverage. Actual next-login triggering, authenticated transport and a real Unicode/apostrophe interpreter installation each need separate evidence; manual scheduled start does not establish them.

@@ -170,6 +170,14 @@ See [Configuration](docs/configuration.md) for the full example, option table, a
 - **Lock file**: Uses a PID lock to prevent duplicate daemons
 - **Conflict handling**: Stops the daemon on merge conflicts (manual resolution required)
 
+Before syncing, the daemon checks for unmerged index entries and unfinished merge,
+rebase, cherry-pick, revert or sequencer operations, including in linked worktrees.
+If any are present, or Git state cannot be inspected, it skips the cycle without
+staging, committing, pulling or pushing. The daemon stays running; resolve the
+operation manually before a later cycle can sync. It never aborts, resets or
+completes an unfinished operation for you.
+Ordinary pull failures still retry on the next cycle.
+
 Obsidian detection is app-wide and checked before each sync cycle. It does not
 coordinate an atomic handoff with the Obsidian Git plugin: opening Obsidian while
 a cycle is already running can overlap their Git operations. If you require a

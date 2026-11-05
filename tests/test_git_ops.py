@@ -2,14 +2,17 @@
 
 import subprocess
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from obsidian_sync.git_ops import (
+    GitInterventionError,
     PullConflictError,
     PushError,
     add_all,
     commit,
+    ensure_sync_ready,
     get_changed_files,
     get_staged_files,
     is_dirty,
@@ -90,6 +93,104 @@ def dirty_repo(git_repo: Path) -> Path:
     notes = git_repo / "notes.md"
     notes.write_text("Some notes\n")
     return git_repo
+
+
+class TestEnsureSyncReady:
+    def test_clean_and_dirty_repositories_are_ready(self, dirty_repo: Path) -> None:
+        ensure_sync_ready(dirty_repo)
+        _git(dirty_repo, "add", "-A")
+        _git(dirty_repo, "commit", "-m", "Add notes")
+        ensure_sync_ready(dirty_repo)
+
+    @pytest.mark.parametrize(
+        "state",
+        [
+            "MERGE_HEAD",
+            "rebase-merge",
+            "rebase-apply",
+            "CHERRY_PICK_HEAD",
+            "REVERT_HEAD",
+            "sequencer",
+        ],
+    )
+    @pytest.mark.parametrize("linked_worktree", [False, True])
+    def test_git_resolved_operation_paths(
+        self, git_repo: Path, tmp_path: Path, state: str, linked_worktree: bool
+    ) -> None:
+        repo = git_repo
+        if linked_worktree:
+            repo = tmp_path / "linked"
+            _git(git_repo, "worktree", "add", "-b", "linked", str(repo))
+            assert (repo / ".git").is_file()
+        state_path = Path(_git(repo, "rev-parse", "--git-path", state).stdout.strip())
+        if not state_path.is_absolute():
+            state_path = repo / state_path
+        if state in {"rebase-merge", "rebase-apply", "sequencer"}:
+            state_path.mkdir()
+        else:
+            state_path.write_text(_git(repo, "rev-parse", "HEAD").stdout)
+        with pytest.raises(GitInterventionError, match=state):
+            ensure_sync_ready(repo)
+
+    @pytest.mark.parametrize(
+        "failed_query",
+        [
+            ["ls-files", "--unmerged", "-z"],
+            *[
+                ["rev-parse", "--git-path", state]
+                for state in (
+                    "MERGE_HEAD",
+                    "rebase-merge",
+                    "rebase-apply",
+                    "CHERRY_PICK_HEAD",
+                    "REVERT_HEAD",
+                    "sequencer",
+                )
+            ],
+        ],
+    )
+    def test_failed_query_refuses_sync(self, git_repo: Path, failed_query: list[str]) -> None:
+        from obsidian_sync.git_ops import _run_git
+
+        def query(repo: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
+            if args == failed_query:
+                return subprocess.CompletedProcess(args, 1, "", "query failed")
+            return _run_git(repo, args)
+
+        with (
+            patch("obsidian_sync.git_ops._run_git", side_effect=query),
+            pytest.raises(GitInterventionError, match="Cannot"),
+        ):
+            ensure_sync_ready(git_repo)
+
+    @pytest.mark.parametrize("error", [OSError("unavailable"), UnicodeError("decode failed")])
+    def test_query_exception_refuses_sync(self, git_repo: Path, error: Exception) -> None:
+        with (
+            patch("obsidian_sync.git_ops._run_git", side_effect=error),
+            pytest.raises(GitInterventionError, match="Cannot inspect Git state"),
+        ):
+            ensure_sync_ready(git_repo)
+
+    def test_unreadable_operation_path_refuses_sync(self, git_repo: Path) -> None:
+        with (
+            patch("obsidian_sync.git_ops.Path.lstat", side_effect=PermissionError("unreadable")),
+            pytest.raises(GitInterventionError, match="Cannot inspect Git state"),
+        ):
+            ensure_sync_ready(git_repo)
+
+    def test_empty_git_path_refuses_sync(self, git_repo: Path) -> None:
+        from obsidian_sync.git_ops import _run_git
+
+        def query(repo: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
+            if args == ["rev-parse", "--git-path", "MERGE_HEAD"]:
+                return subprocess.CompletedProcess(args, 0, "", "")
+            return _run_git(repo, args)
+
+        with (
+            patch("obsidian_sync.git_ops._run_git", side_effect=query),
+            pytest.raises(GitInterventionError, match="Cannot locate Git state MERGE_HEAD"),
+        ):
+            ensure_sync_ready(git_repo)
 
 
 # --- is_dirty ---

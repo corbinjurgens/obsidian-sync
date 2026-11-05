@@ -25,6 +25,10 @@ class GitError(Exception):
     """Base exception for git operations."""
 
 
+class GitInterventionError(GitError):
+    """Raised when sync cannot safely mutate the repository."""
+
+
 class PullConflictError(GitError):
     """Raised when pull --rebase encounters a conflict."""
 
@@ -43,6 +47,40 @@ def _run_git(repo_path: Path, args: list[str]) -> subprocess.CompletedProcess[st
         encoding="utf-8",
         creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
     )
+
+
+def ensure_sync_ready(repo_path: Path) -> None:
+    """Refuse unresolved operations before sync can stage, commit, pull or push."""
+    try:
+        result = _run_git(repo_path, ["ls-files", "--unmerged", "-z"])
+        if result.returncode != 0:
+            raise GitInterventionError(f"Cannot query unmerged index entries: {result.stderr}")
+        if result.stdout:
+            raise GitInterventionError("Unmerged index entries require manual intervention")
+
+        for state in (
+            "MERGE_HEAD",
+            "rebase-merge",
+            "rebase-apply",
+            "CHERRY_PICK_HEAD",
+            "REVERT_HEAD",
+            "sequencer",
+        ):
+            result = _run_git(repo_path, ["rev-parse", "--git-path", state])
+            if result.returncode != 0 or not result.stdout.strip():
+                raise GitInterventionError(f"Cannot locate Git state {state}: {result.stderr}")
+            state_path = Path(result.stdout.strip())
+            if not state_path.is_absolute():
+                state_path = repo_path / state_path
+            try:
+                state_path.lstat()
+            except FileNotFoundError:
+                continue
+            raise GitInterventionError(
+                f"Unfinished Git operation ({state}) requires manual intervention"
+            )
+    except (OSError, UnicodeError, subprocess.SubprocessError) as e:
+        raise GitInterventionError(f"Cannot inspect Git state: {e}") from e
 
 
 def is_dirty(repo_path: Path) -> bool:

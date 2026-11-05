@@ -18,10 +18,12 @@ import psutil
 from obsidian_sync.config import DEFAULT_CONFIG_PATH, SyncConfig, expand_paths
 from obsidian_sync.git_ops import (
     GitError,
+    GitInterventionError,
     PullConflictError,
     PushError,
     add_all,
     commit,
+    ensure_sync_ready,
     get_changed_files,
     is_ahead,
     is_dirty,
@@ -45,6 +47,8 @@ class SyncResult:
     message: str
     deferred: bool = False
     error: str | None = None
+    stop_required: bool = False
+    intervention_required: bool = False
 
 
 class LockError(Exception):
@@ -72,13 +76,8 @@ class SyncDaemon:
         try:
             while self._running and not self._stop_requested():
                 result = self.sync_cycle()
-                is_conflict = (
-                    result.error
-                    and isinstance(result.error, str)
-                    and "conflict" in result.error.lower()
-                )
-                if is_conflict:
-                    logger.error("Conflict detected, stopping daemon: %s", result.error)
+                if result.stop_required:
+                    logger.error("Manual intervention required, stopping daemon: %s", result.error)
                     sys.exit(1)
                 logger.info("Next sync in %d seconds", self.config.sync.interval_seconds)
                 self._sleep(self.config.sync.interval_seconds)
@@ -118,6 +117,15 @@ class SyncDaemon:
             logger.info(msg)
             return SyncResult(synced=False, files_changed=0, message=msg, deferred=True)
 
+        try:
+            ensure_sync_ready(vault)
+        except GitInterventionError as e:
+            msg = f"Sync refused; manual intervention required: {e}"
+            logger.error(msg)
+            return SyncResult(
+                synced=False, files_changed=0, message=msg, error=msg, intervention_required=True
+            )
+
         # ff-only cannot have local commits before pull (would break fast-forward),
         # so it uses the original pull-first order.
         if self.config.sync.pull_strategy == "ff-only":
@@ -149,7 +157,9 @@ class SyncDaemon:
         except PullConflictError as e:
             msg = f"Pull conflict: {e}"
             logger.error(msg)
-            return SyncResult(synced=False, files_changed=0, message=msg, error=msg)
+            return SyncResult(
+                synced=False, files_changed=0, message=msg, error=msg, stop_required=True
+            )
         except GitError as e:
             msg = f"Pull failed (will retry): {e}"
             logger.warning(msg)
@@ -190,7 +200,9 @@ class SyncDaemon:
         except PullConflictError as e:
             msg = f"Pull conflict: {e}"
             logger.error(msg)
-            return SyncResult(synced=False, files_changed=0, message=msg, error=msg)
+            return SyncResult(
+                synced=False, files_changed=0, message=msg, error=msg, stop_required=True
+            )
         except GitError as e:
             msg = f"Pull failed (will retry): {e}"
             logger.warning(msg)
