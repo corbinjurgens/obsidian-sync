@@ -77,7 +77,7 @@ def _merge_dataclass(cls, defaults, overrides):
     return cls(**merged)
 
 
-def load_config(path: Path | None = None) -> SyncConfig:
+def load_config(path: Path | None = None, *, required: bool = False) -> SyncConfig:
     """Load config from YAML, merging over defaults.
 
     If path is None, uses DEFAULT_CONFIG_PATH. If the file doesn't exist,
@@ -86,8 +86,34 @@ def load_config(path: Path | None = None) -> SyncConfig:
     if path is None:
         path = DEFAULT_CONFIG_PATH.expanduser()
     if not path.exists():
+        if required:
+            raise ValueError(f"Config not found: {path}")
         return SyncConfig()
     raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    if not isinstance(raw, dict):
+        raise ValueError("Config must be a YAML mapping")
+    if required:
+        if not isinstance(raw.get("vault_path"), str) or not raw["vault_path"].strip():
+            raise ValueError("Installed config requires an explicit vault_path")
+        for section in ("sync", "commit", "log"):
+            if section in raw and not isinstance(raw[section], dict):
+                raise ValueError(f"Config {section} must be a mapping")
+        for section, defaults in (
+            (None, SyncConfig()),
+            ("sync", SyncSettings()),
+            ("commit", CommitSettings()),
+            ("log", LogSettings()),
+        ):
+            values = raw if section is None else raw.get(section, {})
+            for name, value in values.items():
+                if section is None and name in ("sync", "commit", "log"):
+                    continue
+                if hasattr(defaults, name) and type(value) is not type(getattr(defaults, name)):
+                    raise ValueError(f"Invalid config value: {section or 'config'}.{name}")
+        if raw.get("sync", {}).get("interval_seconds", 60) <= 0:
+            raise ValueError("sync.interval_seconds must be positive")
+        if raw.get("sync", {}).get("pull_strategy", "rebase") not in ("rebase", "merge", "ff-only"):
+            raise ValueError("Invalid sync.pull_strategy")
     defaults = SyncConfig()
     return SyncConfig(
         vault_path=raw.get("vault_path", defaults.vault_path),

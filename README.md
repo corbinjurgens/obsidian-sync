@@ -83,6 +83,23 @@ There is one installed task per Windows account. `enable`, `disable` and
 `--config` is omitted. Other commands, including `status`, `stop` and `log`, need
 the same `--config` when you use a custom file.
 
+Installation captures an identity, the config file, its expanded control-lock
+path and the current environment's interpreter path in
+`~/.config/obsidian-sync/windows-task.json`. Scheduled startup requires matching
+metadata and an existing, valid YAML file with an explicit `vault_path`. Missing
+or malformed files stop startup; an installed task never falls back to the
+default vault. Ordinary foreground commands retain their missing-config defaults.
+You can edit normal sync settings in YAML. Changing `lock_path` requires disabling
+and reinstalling the task so shutdown continues to address the original daemon.
+
+`enable` checks that the registered action matches the installation, then observes
+startup briefly. Its result distinguishes a live daemon, a failed launch (with the
+scheduler result code) and a pending launch. A started process does not establish
+sync health. Check the sync log for actual results. Early startup failures and
+uncaught runtime exceptions are also written to the stable machine-local log
+`%LOCALAPPDATA%\obsidian-sync\windows-startup.log`; detached Windows launches send
+their startup output there too. Both launch modes use Python's `-P` safe-path option.
+
 To remove:
 
 ```powershell
@@ -94,6 +111,19 @@ Disabling prevents future starts and requests shutdown after the current sync.
 If it takes longer than 30 seconds, the command reports that the task is disabled
 but shutdown is still pending. Let it finish and retry; Git is not forcibly
 terminated. Uninstall leaves your vault, config and logs intact.
+
+Shutdown disables future scheduling before reading installation metadata and
+uses the captured control-lock path without reloading YAML. If metadata is broken
+or from an older installation, future starts can still be disabled, but an active
+instance cannot safely be addressed. Wait for it to exit before reinstalling or
+uninstalling. A queued, unknown or unreadable scheduler state does not count as
+stopped, so registration and metadata remain in place until shutdown is verified.
+
+Reinstallation requires an absent task or a disabled, positively stopped task.
+Registration happens disabled before metadata is atomically published. If writing
+metadata fails, the disabled task remains repairable by rerunning `install`.
+Run management commands sequentially; concurrent management and independent Git
+writers are outside this lifecycle contract.
 
 After moving or replacing the installed Python environment, disable the task,
 then run `install` and `enable` again to update its interpreter path.
@@ -145,6 +175,14 @@ coordinate an atomic handoff with the Obsidian Git plugin: opening Obsidian whil
 a cycle is already running can overlap their Git operations. If you require a
 guaranteed handoff, stop the daemon and wait for it to exit before opening
 Obsidian. Match `sync.pull_strategy` to the strategy you use in the plugin.
+
+Windows detection uses the built-in `tasklist.exe` process-name snapshot rather
+than opening every process individually. This avoids permanent deferral when a
+protected system process has an opaque name through process APIs. CSV output is
+decoded with Windows' OEM code page, without localized headers or filtered
+no-match messages. Enumeration errors, timeouts and malformed snapshots defer
+sync and log the reason. This remains a snapshot, so a process may start or exit
+immediately after the check.
 
 ## Development
 

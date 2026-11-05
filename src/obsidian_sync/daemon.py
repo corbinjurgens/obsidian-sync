@@ -1,11 +1,14 @@
 """Sync daemon with loop, lock file, signal handling, and Obsidian detection."""
 
+import csv
+import io
 import logging
 import os
 import platform
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -79,6 +82,9 @@ class SyncDaemon:
                     sys.exit(1)
                 logger.info("Next sync in %d seconds", self.config.sync.interval_seconds)
                 self._sleep(self.config.sync.interval_seconds)
+        except Exception:
+            logger.exception("Daemon failed")
+            raise
         finally:
             self._release_lock()
             self._running = False
@@ -231,11 +237,33 @@ class SyncDaemon:
         """Check if Obsidian is currently running."""
         if platform.system() == "Windows":
             try:
-                return any(
-                    (process.info["name"] or "").casefold() == "obsidian.exe"
-                    for process in psutil.process_iter(["name"])
+                # tasklist can name protected system processes that psutil cannot.
+                # Enumerate all images to avoid localized "no matching tasks" text.
+                executable = (
+                    Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "tasklist.exe"
                 )
-            except psutil.Error as e:
+                result = subprocess.run(
+                    [str(executable), "/FO", "CSV", "/NH"],
+                    capture_output=True,
+                    encoding="oem",
+                    errors="strict",
+                    check=True,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                    timeout=10,
+                )
+                if result.stderr.strip():
+                    raise ValueError(f"tasklist diagnostics: {result.stderr.strip()}")
+                rows = [row for row in csv.reader(io.StringIO(result.stdout), strict=True) if row]
+                if not rows or any(
+                    len(row) != 5
+                    or not row[0].strip()
+                    or not row[1].isascii()
+                    or not row[1].isdigit()
+                    for row in rows
+                ):
+                    raise ValueError("tasklist returned an incomplete process snapshot")
+                return any(row[0].casefold() == "obsidian.exe" for row in rows)
+            except (OSError, subprocess.SubprocessError, UnicodeError, ValueError, csv.Error) as e:
                 logger.warning("Cannot check Obsidian processes; deferring sync: %s", e)
                 return True
         if platform.system() == "Darwin":
@@ -281,13 +309,14 @@ class SyncDaemon:
                     lock_path.unlink()
         except (ValueError, OSError) as e:
             logger.warning("Error releasing lock: %s", e)
-        try:
-            if self._stop_path.read_text(encoding="ascii").strip() == str(os.getpid()):
-                self._stop_path.unlink()
-        except FileNotFoundError:
-            pass
-        except OSError as e:
-            logger.warning("Error removing stop request: %s", e)
+        if platform.system() == "Windows":
+            try:
+                if self._stop_path.read_text(encoding="ascii").strip() == str(os.getpid()):
+                    self._stop_path.unlink()
+            except FileNotFoundError:
+                pass
+            except (OSError, UnicodeError) as e:
+                logger.warning("Error removing stop request: %s", e)
         self._lock_acquired = False
 
     @property
@@ -299,9 +328,14 @@ class SyncDaemon:
         if platform.system() != "Windows":
             return False
         try:
-            return self._stop_path.read_text(encoding="ascii").strip() == str(os.getpid())
+            pid = int(self._stop_path.read_text(encoding="ascii").strip())
+            if pid <= 0:
+                raise ValueError("nonpositive PID")
+            return pid == os.getpid()
         except FileNotFoundError:
             return False
+        except (OSError, ValueError, UnicodeError) as e:
+            raise LockError(f"Cannot read stop request {self._stop_path}: {e}") from e
 
     def _setup_signals(self) -> None:
         """Register signal handlers for graceful shutdown."""
@@ -330,11 +364,24 @@ class SyncDaemon:
             if not _is_pid_alive(pid):
                 return False
             if platform.system() == "Windows":
-                self._stop_path.write_text(str(pid), encoding="ascii")
+                temporary: Path | None = None
+                try:
+                    with tempfile.NamedTemporaryFile(
+                        mode="w", encoding="ascii", dir=lock_path.parent, delete=False
+                    ) as stream:
+                        temporary = Path(stream.name)
+                        stream.write(str(pid))
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                    os.replace(temporary, self._stop_path)
+                finally:
+                    if temporary is not None:
+                        temporary.unlink(missing_ok=True)
                 return True
             os.kill(pid, signal.SIGTERM)
             return True
-        except (ValueError, OSError, ProcessLookupError):
+        except (ValueError, OSError, UnicodeError) as e:
+            logger.warning("Cannot request daemon shutdown: %s", e)
             return False
 
 
@@ -366,6 +413,7 @@ def daemonize(config_path: Path | None = None, verbose: bool = False) -> None:
     if sys.platform == "win32":
         command = [
             sys.executable,
+            "-P",
             "-m",
             "obsidian_sync",
             "--config",
@@ -374,13 +422,18 @@ def daemonize(config_path: Path | None = None, verbose: bool = False) -> None:
         if verbose:
             command.append("--verbose")
         command.append("start")
-        subprocess.Popen(
-            command,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            creationflags=subprocess.CREATE_NO_WINDOW,
-        )
+        from obsidian_sync.windows_service import diagnostic_path
+
+        error_path = diagnostic_path()
+        error_path.parent.mkdir(parents=True, exist_ok=True)
+        with error_path.open("ab") as error_stream:
+            subprocess.Popen(
+                command,
+                stdin=subprocess.DEVNULL,
+                stdout=error_stream,
+                stderr=error_stream,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
         sys.exit(0)
     pid = os.fork()
     if pid > 0:

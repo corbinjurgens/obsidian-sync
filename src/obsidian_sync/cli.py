@@ -95,6 +95,15 @@ def start(ctx: click.Context, run_daemon: bool) -> None:
         raise click.ClickException(str(e)) from e
 
 
+@main.command("installed-start", hidden=True)
+@click.argument("installation_id")
+@click.option("--metadata", type=click.Path(path_type=Path), default=None, hidden=True)
+@click.option("--diagnostics", type=click.Path(path_type=Path), default=None, hidden=True)
+def installed_start(installation_id: str, metadata: Path | None, diagnostics: Path | None) -> None:
+    """Start only the installation captured by the Windows login task."""
+    windows_service.installed_start(installation_id, metadata, diagnostics)
+
+
 @main.command()
 @click.pass_context
 def stop(ctx: click.Context) -> None:
@@ -297,8 +306,9 @@ def enable(ctx: click.Context) -> None:
         subprocess.run(["systemctl", "--user", "start", SYSTEMD_UNIT_NAME], check=True)
         console.print("[green]Service enabled (systemd)[/green]")
     elif system == "Windows":
-        windows_service.enable_task()
-        console.print("[green]Service enabled (Task Scheduler)[/green]")
+        outcome = windows_service.enable_task()
+        console.print(f"Service enabled (Task Scheduler): {outcome}")
+        console.print("Startup observation does not establish sync health; check the logs.")
     else:
         raise click.ClickException(f"Unsupported platform: {system}")
 
