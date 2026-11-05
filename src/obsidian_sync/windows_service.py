@@ -405,6 +405,10 @@ def disable_task() -> None:
     """Disable first; shutdown uses the captured address, never mutable YAML."""
     _disable_registration()
     deadline = time.monotonic() + STOP_TIMEOUT_SECONDS
+    pending_message = (
+        "Task disabled, but shutdown is unverified or the daemon is still finishing "
+        "its sync. Retry after it exits; no process was forcibly terminated."
+    )
     try:
         record = _read_installation()
     except click.ClickException:
@@ -413,11 +417,11 @@ def disable_task() -> None:
     while True:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            raise click.ClickException(
-                "Task disabled, but shutdown is unverified or the daemon is still finishing "
-                "its sync. Retry after it exits; no process was forcibly terminated."
-            )
-        state = _task_state(timeout=remaining)
+            raise click.ClickException(pending_message)
+        try:
+            state = _task_state(timeout=remaining)
+        except click.ClickException as e:
+            raise click.ClickException(f"{pending_message} Scheduler query failed: {e}") from e
         if not state.exists and record is None:
             return
         if record is None:

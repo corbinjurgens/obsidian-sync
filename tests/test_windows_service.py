@@ -287,6 +287,24 @@ def test_enable_refuses_mismatched_action(
     assert not any("Start-ScheduledTask" in script for script in scheduler.scripts)
 
 
+@pytest.mark.parametrize("command", ["disable", "uninstall"])
+def test_stop_query_failure_reports_pending_and_retains_recovery(
+    command: str, service_config: Path, scheduler: Scheduler
+) -> None:
+    service.install_task(service_config)
+    original = service._metadata_path().read_bytes()
+    scheduler.fail = "ConvertTo-Json"
+    result = invoke(command)
+    assert result.exit_code == 1
+    assert "shutdown is unverified" in result.output
+    assert "Retry after it exits" in result.output
+    assert "no process was forcibly terminated" in result.output
+    assert "injected scheduler failure" in result.output
+    assert scheduler.state.exists and not scheduler.state.enabled
+    assert service._metadata_path().read_bytes() == original
+    assert not any("Unregister-ScheduledTask" in script for script in scheduler.scripts)
+
+
 def test_failed_start_exposes_scheduler_result(
     service_config: Path,
     scheduler: Scheduler,

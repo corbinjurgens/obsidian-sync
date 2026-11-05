@@ -218,15 +218,34 @@ uv run ruff format --check src
 uv run ty check src
 ```
 
-To smoke-test a real Windows login task, opt in explicitly. This creates and
-removes a uniquely named test task, with all configuration and logs in pytest's
-temporary directory. It does not use your vault or installed task.
+To verify real Windows scheduled execution, opt in from a non-elevated shell.
+The tests create uniquely named tasks, disposable vaults/remotes and local
+control/log files. A receive hook blocks a real push while disable and uninstall
+time out; releasing the hook must deliver the exact note/commit, stop the daemon
+before another cycle, and allow uninstall to finish. Other sync tasks are checked
+for unchanged definitions.
 
 ```powershell
+$schedulerTestRoot = Join-Path $env:TEMP 'obsidian-sync-scheduler'
+New-Item -ItemType Directory -Force $schedulerTestRoot | Out-Null
 $env:OBSIDIAN_SYNC_TEST_TASKS = '1'
-uv run pytest tests/test_windows_task_integration.py
-Remove-Item Env:OBSIDIAN_SYNC_TEST_TASKS
+try {
+    uv run pytest tests/test_windows_task_integration.py --basetemp "$schedulerTestRoot/fixtures" -o "cache_dir=$schedulerTestRoot/cache"
+} finally {
+    Remove-Item Env:OBSIDIAN_SYNC_TEST_TASKS
+}
 ```
+
+The Git acceptance uses an external fixture worker that overrides only Obsidian
+process detection, so the real app can stay open. Installed startup, daemon,
+Git, receive hook and cooperative control remain real. Separate checks exercise
+actual process detection and missing/malformed installed-config diagnostics.
+
+The CI matrix targets Python 3.11 and 3.13 on Windows, Linux and macOS; scheduler
+registration stays opt-in. Manual task starts do not verify an actual next-login
+trigger, authenticated Git transport, a real interpreter installation with
+Unicode/apostrophes in its path, or an actually Obsidian-free desktop. Those
+deployment checks need their own evidence.
 
 ## License
 

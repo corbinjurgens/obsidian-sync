@@ -109,6 +109,9 @@ The task's description and exact action must match the installation before it is
 enabled. A bounded observation reports started, failed (including the scheduler
 launch result), or pending. Started confirms a live process, not successful sync.
 Inspect the sync log and the stable startup diagnostic log for failures.
+Startup failures attempt to disable future runs. If Windows also rejects that
+cleanup, the command reports future scheduling as unverified and retains recovery
+metadata. Run `disable` before retrying.
 
 ### `obsidian-sync disable`
 
@@ -116,7 +119,9 @@ Disable service from starting on login.
 
 On Windows, also requests cooperative shutdown and waits up to 30 seconds.
 A timeout leaves the task disabled without forcibly terminating Git; retry
-after the active sync finishes. Uses the config captured by `install`.
+after the active sync finishes. A failed scheduler query after disabling also
+reports shutdown as unverified and retains the registration and metadata.
+Uses the config captured by `install`.
 Future scheduling is disabled before metadata is read, and cooperative shutdown
 uses the captured control address without parsing YAML. Broken or legacy metadata
 cannot redirect shutdown through an edited config: an active instance instead

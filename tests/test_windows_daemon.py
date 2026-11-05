@@ -1,5 +1,6 @@
 """Windows detection, cooperative shutdown and background-process regression tests."""
 
+import json
 import os
 import subprocess
 import sys
@@ -286,6 +287,60 @@ def test_runtime_exception_logs_traceback_and_releases_lock(daemon: SyncDaemon, 
         daemon.run()
     assert not Path(daemon.config.lock_path).exists()
     assert any(record.message == "Daemon failed" and record.exc_info for record in caplog.records)
+
+
+@pytest.mark.parametrize("contents", [None, "vault_path: [invalid yaml"])
+def test_installed_start_reports_early_config_failure(tmp_path: Path, contents: str | None) -> None:
+    """An actual child must fail before lock acquisition and leave diagnostics."""
+    config_path = tmp_path / "user's 日本語 config.yaml"
+    if contents is not None:
+        config_path.write_text(contents, encoding="utf-8")
+    metadata = tmp_path / "windows-task.json"
+    lock = tmp_path / "daemon.lock"
+    diagnostics = tmp_path / "startup.log"
+    installation_id = "fa1146bd-764a-438d-b3c7-66fba9dc35d9"
+    metadata.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "installation_id": installation_id,
+                "config_path": str(config_path),
+                "lock_path": str(lock),
+                "interpreter_path": sys.executable,
+            }
+        ),
+        encoding="utf-8",
+    )
+    original_metadata = metadata.read_bytes()
+    command = [
+        sys.executable,
+        "-P",
+        "-m",
+        "obsidian_sync",
+        "installed-start",
+        installation_id,
+        "--metadata",
+        str(metadata),
+        "--diagnostics",
+        str(diagnostics),
+    ]
+    result = subprocess.run(
+        command, cwd=tmp_path, capture_output=True, encoding="utf-8", timeout=15
+    )
+    print(f"Installed startup command: {command!r}; exit={result.returncode}")
+    print(f"Installed startup stdout:\n{result.stdout}\nInstalled startup stderr:\n{result.stderr}")
+    assert result.returncode != 0
+    diagnostic_text = diagnostics.read_text(encoding="utf-8")
+    print(f"Installed startup diagnostics:\n{diagnostic_text}")
+    assert "Installed daemon startup/runtime failure" in diagnostic_text
+    assert "Installed config is invalid" in diagnostic_text
+    assert "Traceback" in diagnostic_text
+    if contents is None:
+        assert "Config not found" in diagnostic_text
+    else:
+        assert "yaml.parser.ParserError" in diagnostic_text
+    assert not lock.exists()
+    assert metadata.read_bytes() == original_metadata
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows background process integration")
