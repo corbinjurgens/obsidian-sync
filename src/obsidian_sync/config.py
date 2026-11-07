@@ -31,6 +31,9 @@ class SyncSettings:
     pull_strategy: str = "rebase"  # rebase | merge | ff-only
     remote: str = "origin"
     branch: str = "main"
+    backoff_initial_seconds: int = 0  # 0 uses interval_seconds
+    backoff_multiplier: float = 2.0
+    backoff_max_seconds: int = 900
 
 
 @dataclass
@@ -108,12 +111,19 @@ def load_config(path: Path | None = None, *, required: bool = False) -> SyncConf
             for name, value in values.items():
                 if section is None and name in ("sync", "commit", "log"):
                     continue
-                if hasattr(defaults, name) and type(value) is not type(getattr(defaults, name)):
+                expected = type(getattr(defaults, name, value))
+                if type(value) is not expected and not (expected is float and type(value) is int):
                     raise ValueError(f"Invalid config value: {section or 'config'}.{name}")
         if raw.get("sync", {}).get("interval_seconds", 60) <= 0:
             raise ValueError("sync.interval_seconds must be positive")
         if raw.get("sync", {}).get("pull_strategy", "rebase") not in ("rebase", "merge", "ff-only"):
             raise ValueError("Invalid sync.pull_strategy")
+        if raw.get("sync", {}).get("backoff_initial_seconds", 0) < 0:
+            raise ValueError("sync.backoff_initial_seconds must not be negative")
+        if raw.get("sync", {}).get("backoff_multiplier", 2.0) < 1:
+            raise ValueError("sync.backoff_multiplier must be at least 1")
+        if raw.get("sync", {}).get("backoff_max_seconds", 900) <= 0:
+            raise ValueError("sync.backoff_max_seconds must be positive")
     defaults = SyncConfig()
     return SyncConfig(
         vault_path=raw.get("vault_path", defaults.vault_path),

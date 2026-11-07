@@ -73,19 +73,24 @@ class SyncDaemon:
             self.config.sync.interval_seconds,
         )
         interval = self.config.sync.interval_seconds
-        retry_delay = interval
-        max_retry_delay = max(interval, 15 * 60)
+        max_retry_delay = max(interval, self.config.sync.backoff_max_seconds)
+        first_retry_delay = min(
+            self.config.sync.backoff_initial_seconds or interval, max_retry_delay
+        )
+        retry_delay = first_retry_delay
         try:
             while self._running and not self._stop_requested():
                 result = self.sync_cycle()
                 if result.deferred:
                     delay = interval
                 elif result.synced:
-                    retry_delay = interval
+                    retry_delay = first_retry_delay
                     delay = interval
                 else:
                     delay = retry_delay
-                    retry_delay = min(retry_delay * 2, max_retry_delay)
+                    retry_delay = min(
+                        int(retry_delay * self.config.sync.backoff_multiplier), max_retry_delay
+                    )
                 logger.info("Next sync in %d seconds", delay)
                 self._sleep(delay)
         except Exception:

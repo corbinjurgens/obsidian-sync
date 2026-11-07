@@ -13,6 +13,9 @@ sync:
   pull_strategy: rebase
   remote: origin
   branch: main
+  backoff_initial_seconds: 0
+  backoff_multiplier: 2.0
+  backoff_max_seconds: 900
 commit:
   template: "{{date}} — Auto-sync completed [host={{hostname}}] [files={{numFiles}}] [changed={{files}}]"
   date_format: "%Y-%m-%d %H:%M:%S"
@@ -32,6 +35,9 @@ lock_path: ~/.local/state/obsidian-sync/daemon.lock
 | `sync.pull_strategy` | `rebase` | Git pull strategy: `rebase`, `merge`, or `ff-only` |
 | `sync.remote` | `origin` | Git remote name |
 | `sync.branch` | `main` | Git branch name |
+| `sync.backoff_initial_seconds` | `0` | First retry delay after a failed cycle; `0` uses `sync.interval_seconds` |
+| `sync.backoff_multiplier` | `2.0` | Factor applied to the delay after each consecutive failure; `1` keeps it constant |
+| `sync.backoff_max_seconds` | `900` | Longest retry delay; the sync interval applies when it is longer |
 | `commit.template` | *(see above)* | Commit message template |
 | `commit.date_format` | `%Y-%m-%d %H:%M:%S` | strftime format for `{{date}}` |
 | `commit.list_files_in_body` | `true` | Include changed file list in commit body |

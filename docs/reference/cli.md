@@ -14,9 +14,10 @@ Detached launch submission does not verify startup or sync health. Startup outpu
 goes to `%LOCALAPPDATA%\obsidian-sync\windows-startup.log`.
 
 Git failures keep the loop running and are recorded in the sync log without
-alerts. The first retry waits the configured sync interval; consecutive failures
-double the wait up to 15 minutes, or the configured interval when longer. A
-successful cycle resets backoff. Obsidian deferral uses ordinary interval polling
+alerts. By default the first retry waits the configured sync interval and
+consecutive failures double the wait up to 15 minutes, or the configured interval
+when longer. The `sync.backoff_*` settings change these values. A successful
+cycle resets backoff. Obsidian deferral uses ordinary interval polling
 and preserves failure history. Resolve unfinished Git operations manually through
 the existing Obsidian Git workflow before syncing can resume.
 
@@ -42,7 +43,12 @@ Show daemon status, config summary, and last log entry.
 
 ```bash
 obsidian-sync status
+obsidian-sync status --json  # daemon, service, last sync and last log for tools
 ```
+
+`--json` reports `daemon`, `pid`, `service` (`installed`, `enabled`, `detail`),
+`vault`, `last_sync` and `last_log`. A service fact that cannot be read is `null`,
+never a guess. `last_sync` is the newest successful cycle still in the log.
 
 ### `obsidian-sync sync`
 
@@ -61,6 +67,7 @@ Show, create, or edit configuration.
 obsidian-sync config          # show current config
 obsidian-sync config --init   # create config interactively
 obsidian-sync config --edit   # open in $EDITOR
+obsidian-sync config --json   # print the effective config as JSON
 ```
 
 ### `obsidian-sync log`

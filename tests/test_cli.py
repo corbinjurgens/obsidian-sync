@@ -1,10 +1,14 @@
 """Tests for the obsidian-sync CLI using click.testing.CliRunner."""
 
+import json
 from pathlib import Path
 
+import click
+import pytest
 import yaml
 from click.testing import CliRunner
 
+from obsidian_sync import cli as cli_module
 from obsidian_sync.cli import main
 from obsidian_sync.config import SyncConfig, save_config
 
@@ -218,3 +222,61 @@ class TestInstallCommand:
         runner = CliRunner()
         result = runner.invoke(main, ["disable", "--help"])
         assert result.exit_code == 0
+
+
+class TestJsonOutput:
+    def test_status_json_reports_service_and_last_successful_sync(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config_path = _make_config_file(tmp_path)
+        (tmp_path / "sync.log").write_text(
+            "2026-11-07 10:00:00,100 [INFO] Synced 2 file(s)\n"
+            "2026-11-07 10:10:00,100 [INFO] Working tree clean, nothing to sync\n"
+            "2026-11-07 10:20:00,100 [ERROR] Push failed: boom\n"
+            "2026-11-07 10:20:00,200 [INFO] Next sync in 60 seconds\n",
+            encoding="utf-8",
+        )
+        service = {"installed": True, "enabled": False, "detail": "Disabled"}
+        monkeypatch.setattr(cli_module, "_service_status", lambda: service)
+
+        result = CliRunner().invoke(main, ["--config", str(config_path), "status", "--json"])
+
+        assert result.exit_code == 0, result.output
+        report = json.loads(result.output)
+        assert report["daemon"] == "Stopped"
+        assert report["pid"] is None
+        assert report["service"] == service
+        assert report["last_sync"] == "2026-11-07 10:10:00"
+        assert report["last_log"].endswith("Next sync in 60 seconds")
+
+    def test_status_json_without_a_log(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config_path = _make_config_file(tmp_path)
+        monkeypatch.setattr(cli_module, "_service_status", lambda: {})
+        result = CliRunner().invoke(main, ["--config", str(config_path), "status", "--json"])
+        report = json.loads(result.output)
+        assert report["last_sync"] is None
+        assert report["last_log"] is None
+
+    def test_scheduler_failure_reads_as_unknown(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def fail() -> None:
+            raise click.ClickException("scheduler timeout")
+
+        monkeypatch.setattr(cli_module.platform, "system", lambda: "Windows")
+        monkeypatch.setattr(cli_module.windows_service, "_task_state", fail)
+        assert cli_module._service_status() == {
+            "installed": None,
+            "enabled": None,
+            "detail": "scheduler timeout",
+        }
+
+    def test_config_json_reports_effective_defaults(self, tmp_path: Path) -> None:
+        path = tmp_path / "config.yaml"
+        path.write_text("vault_path: /vault\nsync:\n  interval_seconds: 5\n", encoding="utf-8")
+        result = CliRunner().invoke(main, ["--config", str(path), "config", "--json"])
+        assert result.exit_code == 0, result.output
+        config = json.loads(result.output)
+        assert config["vault_path"] == "/vault"
+        assert config["sync"]["interval_seconds"] == 5
+        assert config["sync"]["backoff_max_seconds"] == 900
