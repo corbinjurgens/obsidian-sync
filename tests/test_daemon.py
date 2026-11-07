@@ -548,24 +548,47 @@ class TestRunOnce:
 
 class TestRetryBackoff:
     @pytest.mark.parametrize(
-        "interval,outcomes,expected",
+        "interval,outcomes,expected,backoff",
         [
             (
                 30,
                 "ffffffffsff",
                 [30, 60, 120, 240, 480, 900, 900, 900, 30, 30, 60],
+                {},
             ),
-            (1000, "fffsf", [1000, 1000, 1000, 1000, 1000]),
-            (30, "fffddfsf", [30, 60, 120, 30, 30, 240, 30, 30]),
+            (1000, "fffsf", [1000, 1000, 1000, 1000, 1000], {}),
+            (30, "fffddfsf", [30, 60, 120, 30, 30, 240, 30, 30], {}),
+            (
+                60,
+                "ffffsf",
+                [10, 30, 90, 120, 60, 10],
+                {
+                    "backoff_initial_seconds": 10,
+                    "backoff_multiplier": 3,
+                    "backoff_max_seconds": 120,
+                },
+            ),
+            (60, "ffff", [60, 90, 135, 200], {"backoff_multiplier": 1.5, "backoff_max_seconds": 200}),
+            (60, "fff", [60, 60, 60], {"backoff_multiplier": 1.0}),
+            (60, "ff", [60, 60], {"backoff_initial_seconds": 500, "backoff_max_seconds": 30}),
+            (60, "ffff", [1, 2, 3, 5], {"backoff_initial_seconds": 1, "backoff_multiplier": 1.5}),
+            (60, "fff", [60, 900, 900], {"backoff_multiplier": 1.7e308}),
         ],
     )
     def test_delays_cap_reset_and_preserve_history_during_deferral(
-        self, tmp_path: Path, interval: int, outcomes: str, expected: list[int]
+        self,
+        tmp_path: Path,
+        interval: int,
+        outcomes: str,
+        expected: list[int],
+        backoff: dict[str, float],
     ) -> None:
         daemon = SyncDaemon(
             SyncConfig(vault_path=str(tmp_path), lock_path=str(tmp_path / "daemon.lock"))
         )
         daemon.config.sync.interval_seconds = interval
+        for name, value in backoff.items():
+            setattr(daemon.config.sync, name, value)
         results = {
             "f": SyncResult(False, 0, "Git failed", error="Git failed"),
             "s": SyncResult(True, 0, "Clean"),
@@ -830,3 +853,34 @@ class TestFailureRecovery:
             result = CliRunner().invoke(main, ["sync"])
         assert result.exit_code == 1
         assert "Injected failure" in result.output
+
+
+
+class TestUnixObsidianDetection:
+    @pytest.fixture
+    def daemon(self, tmp_path: Path) -> SyncDaemon:
+        return SyncDaemon(
+            SyncConfig(vault_path=str(tmp_path), lock_path=str(tmp_path / "daemon.lock"))
+        )
+
+    @pytest.mark.parametrize("system", ["Darwin", "Linux"])
+    @pytest.mark.parametrize(
+        "outcome,expected",
+        [
+            (subprocess.CompletedProcess([], 0, "123\n", ""), True),
+            (subprocess.CompletedProcess([], 1, "", ""), False),
+            (subprocess.CompletedProcess([], 2, "", "syntax"), True),
+            (FileNotFoundError("pgrep"), True),
+            (subprocess.TimeoutExpired(["pgrep"], 10), True),
+        ],
+    )
+    def test_detection_defers_whenever_pgrep_cannot_answer(
+        self, daemon: SyncDaemon, system: str, outcome: object, expected: bool
+    ) -> None:
+        with (
+            patch("obsidian_sync.daemon.platform.system", return_value=system),
+            patch("obsidian_sync.daemon.subprocess.run", side_effect=[outcome])
+            if isinstance(outcome, BaseException)
+            else patch("obsidian_sync.daemon.subprocess.run", return_value=outcome),
+        ):
+            assert daemon._is_obsidian_running() is expected

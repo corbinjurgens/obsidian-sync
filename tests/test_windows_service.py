@@ -330,6 +330,29 @@ def test_failed_start_exposes_scheduler_result(
     assert not scheduler.state.enabled
 
 
+def test_late_observation_query_gets_a_full_timeout(
+    service_config: Path,
+    scheduler: Scheduler,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service.install_task(service_config)
+    state = scheduler.state
+    running = service.TaskState(**{**asdict(state), "enabled": True, "state": "Running"})
+    clock = iter([0.0, 4.9, 4.95])
+    monkeypatch.setattr(service.time, "monotonic", lambda: next(clock, 4.95))
+    monkeypatch.setattr(service.time, "sleep", lambda _: None)
+    timeouts: list[object] = []
+
+    def query(**kwargs: object) -> service.TaskState:
+        timeouts.append(kwargs.get("timeout"))
+        return state if len(timeouts) == 1 else running
+
+    monkeypatch.setattr(service, "_task_state", query)
+    monkeypatch.setattr(service, "_read_pid", lambda _: os.getpid())
+    assert service.enable_task().startswith("started")
+    assert timeouts[1:] == [None]
+
+
 def test_start_submission_failure_preserves_matching_record(
     service_config: Path,
     scheduler: Scheduler,

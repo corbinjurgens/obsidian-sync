@@ -37,6 +37,16 @@ run = "uv tool install -e ."
 description = "Run e2e tests"
 run = "uv run -m pytest tests/test_e2e.py -v"
 
+[tasks."plugin:test"]
+description = "Run Obsidian plugin tests"
+dir = "plugin"
+run = "npm test"
+
+[tasks."plugin:install"]
+description = "Deploy the Obsidian plugin to WASABI_VAULT"
+dir = "plugin"
+run = "npm run install:vault"
+
 [tasks."docs:serve"]
 description = "Serve docs locally"
 run = "uv run mkdocs serve"

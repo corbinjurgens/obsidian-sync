@@ -3,6 +3,7 @@
 import csv
 import io
 import logging
+import math
 import os
 import platform
 import signal
@@ -73,19 +74,24 @@ class SyncDaemon:
             self.config.sync.interval_seconds,
         )
         interval = self.config.sync.interval_seconds
-        retry_delay = interval
-        max_retry_delay = max(interval, 15 * 60)
+        max_retry_delay = max(interval, self.config.sync.backoff_max_seconds)
+        first_retry_delay = min(
+            self.config.sync.backoff_initial_seconds or interval, max_retry_delay
+        )
+        retry_delay = first_retry_delay
         try:
             while self._running and not self._stop_requested():
                 result = self.sync_cycle()
                 if result.deferred:
                     delay = interval
                 elif result.synced:
-                    retry_delay = interval
+                    retry_delay = first_retry_delay
                     delay = interval
                 else:
                     delay = retry_delay
-                    retry_delay = min(retry_delay * 2, max_retry_delay)
+                    retry_delay = math.ceil(
+                        min(retry_delay * self.config.sync.backoff_multiplier, max_retry_delay)
+                    )
                 logger.info("Next sync in %d seconds", delay)
                 self._sleep(delay)
         except Exception:
@@ -302,13 +308,19 @@ class SyncDaemon:
             name = OBSIDIAN_PROCESS_NAME_LINUX
         try:
             result = subprocess.run(
-                ["pgrep", "-x", name],
-                capture_output=True,
-                text=True,
+                ["pgrep", "-x", name], capture_output=True, text=True, check=False, timeout=10
             )
-            return result.returncode == 0
-        except FileNotFoundError:
-            return False
+        except (OSError, subprocess.SubprocessError) as e:
+            logger.warning("Cannot check Obsidian processes; deferring sync: %s", e)
+            return True
+        # pgrep exits 1 when nothing matches; anything else means it could not answer.
+        if result.returncode not in (0, 1):
+            logger.warning(
+                "Cannot check Obsidian processes; deferring sync: pgrep exited %d",
+                result.returncode,
+            )
+            return True
+        return result.returncode == 0
 
     def _acquire_lock(self) -> None:
         """Acquire the PID-based lock file. Raises LockError if already held."""

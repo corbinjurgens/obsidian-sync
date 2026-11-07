@@ -1,14 +1,20 @@
 """Click CLI for obsidian-sync."""
 
 import importlib.resources
+import json
 import os
 import platform
+import re
 import shutil
 import subprocess
+import sys
 import time
+from dataclasses import asdict
 from pathlib import Path
+from xml.sax.saxutils import escape
 
 import click
+import yaml
 from rich.console import Console
 from rich.table import Table
 
@@ -22,6 +28,7 @@ from obsidian_sync.config import (
     save_config,
 )
 from obsidian_sync.daemon import LockError, SyncDaemon, _is_pid_alive, daemonize, setup_logging
+from obsidian_sync.git_ops import GitError, _run_git
 
 console = Console()
 
@@ -29,6 +36,7 @@ LAUNCHD_LABEL = "com.alexfurrier.obsidian-sync"
 LAUNCHD_PLIST_NAME = f"{LAUNCHD_LABEL}.plist"
 LEGACY_LAUNCHD_PLIST_NAME = "io.github.obsidian-sync.plist"
 SYSTEMD_UNIT_NAME = "obsidian-sync.service"
+SYNC_SUCCESS_LINE = re.compile(r"^(\S+ [^\s,]+)\S* \[INFO\] (?:Synced \d+ file|Working tree clean)")
 
 
 def _daemon_status(lock_path: Path) -> tuple[str, str | None]:
@@ -51,6 +59,62 @@ def _daemon_status(lock_path: Path) -> tuple[str, str | None]:
         return "Invalid lock", pid
 
     return "Stale lock", pid
+
+
+def _probe(command: list[str]) -> subprocess.CompletedProcess[str] | None:
+    """Run a read-only service query, returning None when it cannot answer."""
+    try:
+        return subprocess.run(command, capture_output=True, text=True, check=False, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def _service_status() -> dict[str, bool | str | None]:
+    """Report the login service without changing it; None marks an unknown fact."""
+    system = platform.system()
+    if system == "Darwin":
+        plist = Path.home() / "Library" / "LaunchAgents" / LAUNCHD_PLIST_NAME
+        loaded = _probe(["launchctl", "list", LAUNCHD_LABEL])
+        enabled = None if loaded is None else loaded.returncode == 0
+        return {"installed": plist.exists(), "enabled": enabled, "detail": "launchd"}
+    if system == "Linux":
+        unit = Path.home() / ".config" / "systemd" / "user" / SYSTEMD_UNIT_NAME
+        queried = _probe(["systemctl", "--user", "is-enabled", SYSTEMD_UNIT_NAME])
+        # is-enabled names the state on stdout; a bus failure prints nothing there.
+        answer = queried.stdout.strip() if queried is not None else ""
+        enabled = queried.returncode == 0 if queried is not None and answer else None
+        return {"installed": unit.exists(), "enabled": enabled, "detail": "systemd"}
+    if system == "Windows":
+        try:
+            task = windows_service._task_state()
+        except click.ClickException as e:
+            return {"installed": None, "enabled": None, "detail": e.message}
+        return {"installed": task.exists, "enabled": task.enabled, "detail": task.state}
+    return {"installed": None, "enabled": None, "detail": f"Unsupported platform: {system}"}
+
+
+def _vault_problem(config: SyncConfig) -> str | None:
+    """Explain why the vault cannot sync to its configured remote, or return None."""
+    vault = Path(config.vault_path)
+    if not vault.is_dir():
+        return f"Vault folder not found: {vault}"
+    try:
+        if _run_git(vault, ["rev-parse", "--is-inside-work-tree"]).returncode != 0:
+            return f"Vault is not a Git repository: {vault}"
+        if _run_git(vault, ["remote", "get-url", config.sync.remote]).returncode != 0:
+            return f"Git remote not configured: {config.sync.remote}"
+    except GitError as e:
+        return str(e)
+    return None
+
+
+def _last_sync(log_lines: list[str]) -> str | None:
+    """Return the timestamp of the newest successful cycle in the log."""
+    for line in reversed(log_lines):
+        match = SYNC_SUCCESS_LINE.match(line)
+        if match:
+            return match.group(1)
+    return None
 
 
 def _load_and_expand(config_path: Path | None) -> SyncConfig:
@@ -122,12 +186,30 @@ def stop(ctx: click.Context) -> None:
 
 
 @main.command()
+@click.option("--json", "as_json", is_flag=True, default=False, help="Print JSON for tools.")
 @click.pass_context
-def status(ctx: click.Context) -> None:
+def status(ctx: click.Context, as_json: bool) -> None:
     """Show daemon status."""
     config = _load_and_expand(ctx.obj["config_path"])
     lock_path = Path(config.lock_path)
     log_path = Path(config.log.path)
+    log_lines: list[str] = []
+    if log_path.exists():
+        log_lines = log_path.read_text(encoding="utf-8").strip().splitlines()
+
+    if as_json:
+        daemon_status, pid = _daemon_status(lock_path)
+        report = {
+            "daemon": daemon_status,
+            "pid": pid,
+            "service": _service_status(),
+            "vault": config.vault_path,
+            "vault_problem": _vault_problem(config),
+            "last_sync": _last_sync(log_lines),
+            "last_log": log_lines[-1] if log_lines else None,
+        }
+        click.echo(json.dumps(report))
+        return
 
     table = Table(title="obsidian-sync status", show_header=False)
     table.add_column("Key", style="bold")
@@ -153,10 +235,8 @@ def status(ctx: click.Context) -> None:
     table.add_row("Strategy", config.sync.pull_strategy)
     table.add_row("Remote", f"{config.sync.remote}/{config.sync.branch}")
 
-    if log_path.exists():
-        lines = log_path.read_text(encoding="utf-8").strip().splitlines()
-        if lines:
-            table.add_row("Last log", lines[-1])
+    if log_lines:
+        table.add_row("Last log", log_lines[-1])
 
     console.print(table)
 
@@ -206,14 +286,18 @@ def log(ctx: click.Context, tail: bool, since: str | None, lines: int) -> None:
     else:
         all_lines = log_path.read_text(encoding="utf-8").strip().splitlines()
         for line in all_lines[-lines:]:
-            console.print(line)
+            console.print(line, markup=False, highlight=False)
 
 
 @main.command()
 @click.option("--init", "do_init", is_flag=True, default=False, help="Create default config.")
 @click.option("--edit", "do_edit", is_flag=True, default=False, help="Open config in $EDITOR.")
+@click.option("--json", "as_json", is_flag=True, default=False, help="Print JSON for tools.")
+@click.option(
+    "--strict", is_flag=True, default=False, help="Apply the checks of scheduled startup."
+)
 @click.pass_context
-def config(ctx: click.Context, do_init: bool, do_edit: bool) -> None:
+def config(ctx: click.Context, do_init: bool, do_edit: bool, as_json: bool, strict: bool) -> None:
     """Show or initialize configuration."""
     config_path = ctx.obj["config_path"] or DEFAULT_CONFIG_PATH.expanduser()
 
@@ -236,7 +320,14 @@ def config(ctx: click.Context, do_init: bool, do_edit: bool) -> None:
         subprocess.run([editor, str(config_path)], check=False)
         return
 
-    cfg = load_config(ctx.obj["config_path"])
+    try:
+        cfg = load_config(ctx.obj["config_path"], required=strict)
+    except (ValueError, yaml.YAMLError) as e:
+        raise click.ClickException(str(e).replace("\n", " ")) from e
+    if as_json:
+        click.echo(json.dumps(asdict(cfg)))
+        return
+
     table = Table(title="Configuration", show_header=False)
     table.add_column("Key", style="bold")
     table.add_column("Value")
@@ -245,6 +336,9 @@ def config(ctx: click.Context, do_init: bool, do_edit: bool) -> None:
     table.add_row("sync.pull_strategy", cfg.sync.pull_strategy)
     table.add_row("sync.remote", cfg.sync.remote)
     table.add_row("sync.branch", cfg.sync.branch)
+    table.add_row("sync.backoff_initial_seconds", str(cfg.sync.backoff_initial_seconds))
+    table.add_row("sync.backoff_multiplier", str(cfg.sync.backoff_multiplier))
+    table.add_row("sync.backoff_max_seconds", str(cfg.sync.backoff_max_seconds))
     table.add_row("commit.template", cfg.commit.template)
     table.add_row("commit.date_format", cfg.commit.date_format)
     table.add_row("commit.list_files_in_body", str(cfg.commit.list_files_in_body))
@@ -299,7 +393,7 @@ def enable(ctx: click.Context) -> None:
         plist = Path.home() / "Library" / "LaunchAgents" / LAUNCHD_PLIST_NAME
         if not plist.exists():
             raise click.ClickException("Service not installed. Run 'install' first.")
-        subprocess.run(["launchctl", "load", str(plist)], check=True)
+        subprocess.run(["launchctl", "load", "-w", str(plist)], check=True)
         console.print("[green]Service enabled (launchd)[/green]")
     elif system == "Linux":
         subprocess.run(["systemctl", "--user", "enable", SYSTEMD_UNIT_NAME], check=True)
@@ -322,7 +416,8 @@ def disable(ctx: click.Context) -> None:
     if system == "Darwin":
         plist = Path.home() / "Library" / "LaunchAgents" / LAUNCHD_PLIST_NAME
         if plist.exists():
-            subprocess.run(["launchctl", "unload", str(plist)], check=False)
+            # -w records the override; without it launchd loads the plist at next login.
+            subprocess.run(["launchctl", "unload", "-w", str(plist)], check=False)
         console.print("[green]Service disabled (launchd)[/green]")
     elif system == "Linux":
         subprocess.run(["systemctl", "--user", "stop", SYSTEMD_UNIT_NAME], check=False)
@@ -375,7 +470,12 @@ def _install_launchd() -> None:
     dest_dir = Path.home() / "Library" / "LaunchAgents"
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / LAUNCHD_PLIST_NAME
-    rendered = source.read_text().replace("%HOME%", str(Path.home()))
+    # The interpreter path survives `uv tool install --force` and any uv bin directory.
+    rendered = (
+        source.read_text()
+        .replace("%HOME%", escape(str(Path.home())))
+        .replace("%PYTHON%", escape(sys.executable))
+    )
     dest.write_text(rendered)
     shutil.copystat(source, dest)
     console.print(f"[green]Installed: {dest}[/green]")

@@ -16,6 +16,8 @@ Headless git sync daemon for Obsidian vaults.
 
 Single test: `uv run -m pytest tests/path::func`
 
+Plugin tests and vault deployment: `npm test` and `npm run install:vault` from `plugin/`.
+
 ## Architecture
 
 Click CLI -> daemon with PID lock + signal handling -> git ops (pull/commit/push) on a timer. Config via YAML at `~/.config/obsidian-sync/config.yaml`. Service templates for launchd (macOS) and systemd (Linux) bundled as package data.
@@ -29,6 +31,7 @@ Click CLI -> daemon with PID lock + signal handling -> git ops (pull/commit/push
 | `src/obsidian_sync/git_ops.py` | Git primitives (pull, push, commit) |
 | `src/obsidian_sync/config.py` | YAML config with dataclass defaults |
 | `src/obsidian_sync/template.py` | Commit message rendering |
+| `plugin/main.js`, `plugin/lib/` | Obsidian plugin that manages the companion |
 
 ## Style
 

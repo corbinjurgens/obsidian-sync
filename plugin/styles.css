@@ -1,0 +1,42 @@
+.osc-settings .osc-warning {
+  margin-bottom: var(--size-4-3);
+  padding: var(--size-4-2) var(--size-4-3);
+  border-left: 3px solid var(--text-warning);
+  background: var(--background-secondary);
+}
+
+.osc-settings .osc-busy {
+  margin-bottom: var(--size-4-3);
+  color: var(--text-muted);
+}
+
+.osc-settings .osc-status {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--size-2-2) var(--size-4-4);
+  margin: var(--size-4-2) 0;
+}
+
+.osc-settings .osc-status dt {
+  color: var(--text-muted);
+}
+
+.osc-settings .osc-status dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.osc-settings .osc-command,
+.osc-settings .osc-log {
+  padding: var(--size-4-2);
+  overflow-x: auto;
+  background: var(--background-secondary);
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-small);
+  user-select: text;
+}
+
+.osc-settings .osc-log {
+  max-height: 320px;
+  overflow-y: auto;
+}

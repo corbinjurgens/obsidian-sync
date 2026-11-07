@@ -3,6 +3,7 @@
 from dataclasses import fields
 from pathlib import Path
 
+import pytest
 import yaml
 
 from obsidian_sync.config import (
@@ -133,3 +134,33 @@ class TestSaveConfig:
         assert nested_path.exists()
         reloaded = load_config(nested_path)
         assert reloaded == SyncConfig()
+
+
+class TestBackoffSettings:
+    def _load(self, tmp_path, sync_text):
+        path = tmp_path / "config.yaml"
+        path.write_text(f"vault_path: /vault\nsync:\n{sync_text}", encoding="utf-8")
+        return load_config(path, required=True)
+
+    def test_defaults_preserve_interval_first_retry_and_fifteen_minute_cap(self):
+        settings = SyncConfig().sync
+        assert settings.backoff_initial_seconds == 0
+        assert settings.backoff_multiplier == 2.0
+        assert settings.backoff_max_seconds == 900
+
+    def test_integer_multiplier_is_accepted_by_installed_validation(self, tmp_path):
+        assert self._load(tmp_path, "  backoff_multiplier: 3\n").sync.backoff_multiplier == 3
+
+    @pytest.mark.parametrize(
+        "sync_text,message",
+        [
+            ("  backoff_initial_seconds: -1\n", "backoff_initial_seconds"),
+            ("  backoff_multiplier: 0.5\n", "backoff_multiplier"),
+            ("  backoff_max_seconds: 0\n", "backoff_max_seconds"),
+            ("  backoff_multiplier: fast\n", "backoff_multiplier"),
+            ("  backoff_max_seconds: 1.5\n", "backoff_max_seconds"),
+        ],
+    )
+    def test_invalid_values_are_rejected_for_installed_startup(self, tmp_path, sync_text, message):
+        with pytest.raises(ValueError, match=message):
+            self._load(tmp_path, sync_text)

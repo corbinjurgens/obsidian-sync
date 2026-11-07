@@ -1,10 +1,15 @@
 """Tests for the obsidian-sync CLI using click.testing.CliRunner."""
 
+import json
+import subprocess
 from pathlib import Path
 
+import click
+import pytest
 import yaml
 from click.testing import CliRunner
 
+from obsidian_sync import cli as cli_module
 from obsidian_sync.cli import main
 from obsidian_sync.config import SyncConfig, save_config
 
@@ -218,3 +223,185 @@ class TestInstallCommand:
         runner = CliRunner()
         result = runner.invoke(main, ["disable", "--help"])
         assert result.exit_code == 0
+
+
+class TestJsonOutput:
+    def test_status_json_reports_service_and_last_successful_sync(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config_path = _make_config_file(tmp_path)
+        (tmp_path / "sync.log").write_text(
+            "2026-11-07 10:00:00,100 [INFO] Synced 2 file(s)\n"
+            "2026-11-07 10:10:00,100 [INFO] Working tree clean, nothing to sync\n"
+            "2026-11-07 10:20:00,100 [ERROR] Push failed: boom\n"
+            "2026-11-07 10:20:00,200 [INFO] Next sync in 60 seconds\n",
+            encoding="utf-8",
+        )
+        service = {"installed": True, "enabled": False, "detail": "Disabled"}
+        monkeypatch.setattr(cli_module, "_service_status", lambda: service)
+
+        result = CliRunner().invoke(main, ["--config", str(config_path), "status", "--json"])
+
+        assert result.exit_code == 0, result.output
+        report = json.loads(result.output)
+        assert report["daemon"] == "Stopped"
+        assert report["pid"] is None
+        assert report["service"] == service
+        assert report["last_sync"] == "2026-11-07 10:10:00"
+        assert report["last_log"].endswith("Next sync in 60 seconds")
+
+    def test_status_json_without_a_log(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config_path = _make_config_file(tmp_path)
+        monkeypatch.setattr(cli_module, "_service_status", lambda: {})
+        result = CliRunner().invoke(main, ["--config", str(config_path), "status", "--json"])
+        report = json.loads(result.output)
+        assert report["last_sync"] is None
+        assert report["last_log"] is None
+
+    def test_scheduler_failure_reads_as_unknown(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def fail() -> None:
+            raise click.ClickException("scheduler timeout")
+
+        monkeypatch.setattr(cli_module.platform, "system", lambda: "Windows")
+        monkeypatch.setattr(cli_module.windows_service, "_task_state", fail)
+        assert cli_module._service_status() == {
+            "installed": None,
+            "enabled": None,
+            "detail": "scheduler timeout",
+        }
+
+    def test_config_json_reports_effective_defaults(self, tmp_path: Path) -> None:
+        path = tmp_path / "config.yaml"
+        path.write_text("vault_path: /vault\nsync:\n  interval_seconds: 5\n", encoding="utf-8")
+        result = CliRunner().invoke(main, ["--config", str(path), "config", "--json"])
+        assert result.exit_code == 0, result.output
+        config = json.loads(result.output)
+        assert config["vault_path"] == "/vault"
+        assert config["sync"]["interval_seconds"] == 5
+        assert config["sync"]["backoff_max_seconds"] == 900
+
+    def test_config_strict_applies_scheduled_startup_checks(self, tmp_path: Path) -> None:
+        path = tmp_path / "config.yaml"
+        path.write_text("vault_path: /vault\nlog:\n  max_size_mb: 10.5\n", encoding="utf-8")
+        lenient = CliRunner().invoke(main, ["--config", str(path), "config", "--json"])
+        strict = CliRunner().invoke(main, ["--config", str(path), "config", "--json", "--strict"])
+        assert lenient.exit_code == 0
+        assert strict.exit_code == 1
+        assert "log.max_size_mb" in strict.output
+
+    def test_config_strict_reports_broken_yaml_cleanly(self, tmp_path: Path) -> None:
+        path = tmp_path / "config.yaml"
+        path.write_text("sync: [\n", encoding="utf-8")
+        result = CliRunner().invoke(main, ["--config", str(path), "config", "--json", "--strict"])
+        assert result.exit_code == 1
+        assert result.exception is None or isinstance(result.exception, SystemExit)
+
+    def test_missing_service_manager_reads_as_unknown(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def missing(*_: object, **__: object) -> None:
+            raise FileNotFoundError("systemctl")
+
+        monkeypatch.setattr(cli_module.platform, "system", lambda: "Linux")
+        monkeypatch.setattr(cli_module.Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(cli_module.subprocess, "run", missing)
+        assert cli_module._service_status()["enabled"] is None
+
+    @pytest.mark.parametrize(
+        "code,stdout,expected",
+        [(0, "enabled\n", True), (1, "disabled\n", False), (1, "", None)],
+    )
+    def test_systemd_answers_map_to_enabled(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        code: int,
+        stdout: str,
+        expected: bool | None,
+    ) -> None:
+        monkeypatch.setattr(cli_module.platform, "system", lambda: "Linux")
+        monkeypatch.setattr(cli_module.Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            cli_module.subprocess,
+            "run",
+            lambda *_, **__: subprocess.CompletedProcess([], code, stdout, ""),
+        )
+        assert cli_module._service_status()["enabled"] is expected
+
+    def test_launchd_disable_persists_across_logins(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        plist = tmp_path / "Library" / "LaunchAgents" / cli_module.LAUNCHD_PLIST_NAME
+        plist.parent.mkdir(parents=True)
+        plist.write_text("", encoding="utf-8")
+        commands: list[list[str]] = []
+        monkeypatch.setattr(cli_module.platform, "system", lambda: "Darwin")
+        monkeypatch.setattr(cli_module.Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            cli_module.subprocess,
+            "run",
+            lambda command, **_: commands.append(command),
+        )
+        CliRunner().invoke(main, ["disable"])
+        CliRunner().invoke(main, ["enable"])
+        assert commands == [
+            ["launchctl", "unload", "-w", str(plist)],
+            ["launchctl", "load", "-w", str(plist)],
+        ]
+
+    def test_log_prints_brackets_literally(self, tmp_path: Path) -> None:
+        config_path = _make_config_file(tmp_path)
+        line = "2026-11-07 10:00:00,100 [INFO] Committed: x [host=a] [/tmp/x] [rejected]"
+        (tmp_path / "sync.log").write_text(line + "\n", encoding="utf-8")
+        result = CliRunner().invoke(main, ["--config", str(config_path), "log"])
+        assert result.exit_code == 0, result.output
+        assert line in result.output
+
+
+class TestVaultProblem:
+    def _config(self, vault: Path) -> SyncConfig:
+        return SyncConfig(vault_path=str(vault))
+
+    def test_missing_folder(self, tmp_path: Path) -> None:
+        problem = cli_module._vault_problem(self._config(tmp_path / "gone"))
+        assert problem is not None
+        assert "not found" in problem
+
+    def test_folder_outside_git(self, tmp_path: Path) -> None:
+        problem = cli_module._vault_problem(self._config(tmp_path))
+        assert problem is not None
+        assert "not a Git repository" in problem
+
+    def test_repository_without_remote_then_ready(self, tmp_path: Path) -> None:
+        subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+        assert cli_module._vault_problem(self._config(tmp_path)) == (
+            "Git remote not configured: origin"
+        )
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "remote", "add", "origin", str(tmp_path / "remote.git")],
+            check=True,
+        )
+        assert cli_module._vault_problem(self._config(tmp_path)) is None
+
+
+class TestLaunchdTemplate:
+    def test_install_runs_this_interpreter_without_prompts(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(cli_module.Path, "home", lambda: tmp_path / "home & co")
+        monkeypatch.setattr(cli_module.sys, "executable", "/tools/obsidian sync/bin/python")
+        monkeypatch.setattr(cli_module.subprocess, "run", lambda *_, **__: None)
+        cli_module._install_launchd()
+        plist = (
+            tmp_path / "home & co" / "Library" / "LaunchAgents" / cli_module.LAUNCHD_PLIST_NAME
+        )
+        text = plist.read_text(encoding="utf-8")
+        assert "<string>/tools/obsidian sync/bin/python</string>" in text
+        assert "<string>-P</string>" in text
+        assert "<string>obsidian_sync</string>" in text
+        assert "home &amp; co" in text
+        assert "<key>GIT_TERMINAL_PROMPT</key>" in text
+        assert ".local/bin/obsidian-sync<" not in text
+        assert "%" not in text

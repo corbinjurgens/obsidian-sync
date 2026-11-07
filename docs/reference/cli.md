@@ -14,9 +14,10 @@ Detached launch submission does not verify startup or sync health. Startup outpu
 goes to `%LOCALAPPDATA%\obsidian-sync\windows-startup.log`.
 
 Git failures keep the loop running and are recorded in the sync log without
-alerts. The first retry waits the configured sync interval; consecutive failures
-double the wait up to 15 minutes, or the configured interval when longer. A
-successful cycle resets backoff. Obsidian deferral uses ordinary interval polling
+alerts. By default the first retry waits the configured sync interval and
+consecutive failures double the wait up to 15 minutes, or the configured interval
+when longer. The `sync.backoff_*` settings change these values. A successful
+cycle resets backoff. Obsidian deferral uses ordinary interval polling
 and preserves failure history. Resolve unfinished Git operations manually through
 the existing Obsidian Git workflow before syncing can resume.
 
@@ -42,7 +43,14 @@ Show daemon status, config summary, and last log entry.
 
 ```bash
 obsidian-sync status
+obsidian-sync status --json  # daemon, service, last sync and last log for tools
 ```
+
+`--json` reports `daemon`, `pid`, `service` (`installed`, `enabled`, `detail`),
+`vault`, `vault_problem`, `last_sync` and `last_log`. `vault_problem` explains why
+the vault cannot sync (missing folder, not a Git repository, or the remote is not
+configured), or is `null`. A service fact that cannot be read is `null`,
+never a guess. `last_sync` is the newest successful cycle still in the log.
 
 ### `obsidian-sync sync`
 
@@ -61,7 +69,12 @@ Show, create, or edit configuration.
 obsidian-sync config          # show current config
 obsidian-sync config --init   # create config interactively
 obsidian-sync config --edit   # open in $EDITOR
+obsidian-sync config --json   # print the effective config as JSON
+obsidian-sync config --strict # also apply the checks of scheduled startup
 ```
+
+`--strict` fails on what would stop a scheduled start: a missing file or
+`vault_path`, a wrongly typed value, or an out-of-range setting.
 
 ### `obsidian-sync log`
 
@@ -102,7 +115,8 @@ unregister operation retains metadata for retry.
 
 ### `obsidian-sync enable`
 
-Enable service to start on login.
+Enable service to start on login. On macOS, `load -w` clears the override that
+`disable` records.
 
 On Windows, also starts it immediately. Uses the config captured by `install`.
 The task's description and exact action must match the installation before it is
@@ -115,7 +129,8 @@ metadata. Run `disable` before retrying.
 
 ### `obsidian-sync disable`
 
-Disable service from starting on login.
+Disable service from starting on login. On macOS, `unload -w` makes this last
+across logins.
 
 On Windows, also requests cooperative shutdown and waits up to 30 seconds.
 A timeout leaves the task disabled without forcibly terminating Git; retry
