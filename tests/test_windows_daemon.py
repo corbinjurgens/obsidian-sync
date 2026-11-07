@@ -132,11 +132,20 @@ def test_windows_success_with_diagnostics_still_defers(daemon: SyncDaemon, caplo
     assert "deferring sync" in caplog.text
 
 
+def test_pid_check_classifies_processes() -> None:
+    assert _is_pid_alive(os.getpid())
+    assert not _is_pid_alive(-1)
+    assert not _is_pid_alive(0)
+    assert not _is_pid_alive(99999999)
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="os.kill terminates processes only on Windows; POSIX psutil probes with signal 0",
+)
 def test_pid_check_does_not_send_a_signal() -> None:
     with patch("obsidian_sync.daemon.os.kill") as kill:
         assert _is_pid_alive(os.getpid())
-        assert not _is_pid_alive(-1)
-        assert not _is_pid_alive(0)
         assert not _is_pid_alive(99999999)
         kill.assert_not_called()
 
@@ -157,7 +166,8 @@ def test_windows_stop_finishes_current_cycle(daemon: SyncDaemon) -> None:
         patch("obsidian_sync.daemon.os.kill") as kill,
     ):
         daemon.run()
-        kill.assert_not_called()
+    # POSIX psutil probes PIDs through os.kill(pid, 0); only a termination signal is a failure.
+    assert all(call.args[1] == 0 for call in kill.call_args_list)
     assert cycles == ["finished"]
     assert not Path(daemon.config.lock_path).exists()
     assert not daemon._stop_path.exists()

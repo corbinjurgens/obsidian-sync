@@ -289,8 +289,9 @@ def test_enable_refuses_mismatched_action(
 
 @pytest.mark.parametrize("command", ["disable", "uninstall"])
 def test_stop_query_failure_reports_pending_and_retains_recovery(
-    command: str, service_config: Path, scheduler: Scheduler
+    command: str, service_config: Path, scheduler: Scheduler, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setattr("obsidian_sync.cli.platform.system", lambda: "Windows")
     service.install_task(service_config)
     original = service._metadata_path().read_bytes()
     scheduler.fail = "ConvertTo-Json"
@@ -347,6 +348,7 @@ def test_enable_failure_after_enabling_reports_compensation(
     scheduler: Scheduler,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr("obsidian_sync.cli.platform.system", lambda: "Windows")
     service.install_task(service_config)
     original = service._metadata_path().read_bytes()
     run = scheduler.run
