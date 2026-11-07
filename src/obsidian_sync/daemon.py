@@ -308,13 +308,19 @@ class SyncDaemon:
             name = OBSIDIAN_PROCESS_NAME_LINUX
         try:
             result = subprocess.run(
-                ["pgrep", "-x", name],
-                capture_output=True,
-                text=True,
+                ["pgrep", "-x", name], capture_output=True, text=True, check=False, timeout=10
             )
-            return result.returncode == 0
-        except FileNotFoundError:
-            return False
+        except (OSError, subprocess.SubprocessError) as e:
+            logger.warning("Cannot check Obsidian processes; deferring sync: %s", e)
+            return True
+        # pgrep exits 1 when nothing matches; anything else means it could not answer.
+        if result.returncode not in (0, 1):
+            logger.warning(
+                "Cannot check Obsidian processes; deferring sync: pgrep exited %d",
+                result.returncode,
+            )
+            return True
+        return result.returncode == 0
 
     def _acquire_lock(self) -> None:
         """Acquire the PID-based lock file. Raises LockError if already held."""

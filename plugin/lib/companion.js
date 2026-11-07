@@ -148,12 +148,15 @@ class Companion {
       if (state.vaultMismatch) {
         throw new Error(`The companion config syncs another vault: ${state.settings.vault_path}. Run obsidian-sync config --edit to change it.`);
       }
+      let ready = state;
       if (!state.configExists) {
         const strategy = { 'sync.pull_strategy': state.settings.sync.pull_strategy };
         await this.writeVerified({ vault_path: this.vaultPath, ...strategy }, state.settings);
+        ready = await this.readState();
       }
+      if (ready.status.vaultProblem) throw new Error(`This vault cannot sync yet: ${ready.status.vaultProblem}`);
       // `install` replaces a macOS plist and a reviewed machine definition may be registered.
-      if (!state.status.service.installed) await this.cli('install');
+      if (!ready.status.service.installed) await this.cli('install');
       await this.cli('enable');
       return this.readState();
     });

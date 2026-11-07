@@ -358,3 +358,50 @@ class TestJsonOutput:
         result = CliRunner().invoke(main, ["--config", str(config_path), "log"])
         assert result.exit_code == 0, result.output
         assert line in result.output
+
+
+class TestVaultProblem:
+    def _config(self, vault: Path) -> SyncConfig:
+        return SyncConfig(vault_path=str(vault))
+
+    def test_missing_folder(self, tmp_path: Path) -> None:
+        problem = cli_module._vault_problem(self._config(tmp_path / "gone"))
+        assert problem is not None
+        assert "not found" in problem
+
+    def test_folder_outside_git(self, tmp_path: Path) -> None:
+        problem = cli_module._vault_problem(self._config(tmp_path))
+        assert problem is not None
+        assert "not a Git repository" in problem
+
+    def test_repository_without_remote_then_ready(self, tmp_path: Path) -> None:
+        subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+        assert cli_module._vault_problem(self._config(tmp_path)) == (
+            "Git remote not configured: origin"
+        )
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "remote", "add", "origin", str(tmp_path / "remote.git")],
+            check=True,
+        )
+        assert cli_module._vault_problem(self._config(tmp_path)) is None
+
+
+class TestLaunchdTemplate:
+    def test_install_runs_this_interpreter_without_prompts(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(cli_module.Path, "home", lambda: tmp_path / "home & co")
+        monkeypatch.setattr(cli_module.sys, "executable", "/tools/obsidian sync/bin/python")
+        monkeypatch.setattr(cli_module.subprocess, "run", lambda *_, **__: None)
+        cli_module._install_launchd()
+        plist = (
+            tmp_path / "home & co" / "Library" / "LaunchAgents" / cli_module.LAUNCHD_PLIST_NAME
+        )
+        text = plist.read_text(encoding="utf-8")
+        assert "<string>/tools/obsidian sync/bin/python</string>" in text
+        assert "<string>-P</string>" in text
+        assert "<string>obsidian_sync</string>" in text
+        assert "home &amp; co" in text
+        assert "<key>GIT_TERMINAL_PROMPT</key>" in text
+        assert ".local/bin/obsidian-sync<" not in text
+        assert "%" not in text

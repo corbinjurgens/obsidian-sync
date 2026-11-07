@@ -28,6 +28,7 @@ function parseStatus(stdout) {
       detail: text(raw.service?.detail),
     },
     vault: text(raw.vault),
+    vaultProblem: text(raw.vault_problem),
     lastSync: text(raw.last_sync),
     lastLog: text(raw.last_log),
   };

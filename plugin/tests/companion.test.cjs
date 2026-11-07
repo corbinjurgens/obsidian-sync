@@ -22,7 +22,7 @@ function defaults(vault) {
 }
 
 // A mocked CLI: `service` and the config on disk stand in for the real companion.
-function harness(t, { service = { installed: true, enabled: false, detail: 'Disabled' }, gitActive = true, withConfig = true, outdated = false, fail = {}, uv = true, platform = 'linux' } = {}) {
+function harness(t, { vaultProblem = null, service = { installed: true, enabled: false, detail: 'Disabled' }, gitActive = true, withConfig = true, outdated = false, fail = {}, uv = true, platform = 'linux' } = {}) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'sync-companion-'));
   t.after(() => fs.rmSync(home, { recursive: true, force: true }));
   const vault = path.join(home, 'vault');
@@ -42,7 +42,7 @@ function harness(t, { service = { installed: true, enabled: false, detail: 'Disa
       if (outdated) throw Object.assign(new Error('failed'), { stderr: 'Error: No such option: --json' });
       const text = fs.existsSync(configFile) ? fs.readFileSync(configFile, 'utf8') : '';
       const configured = /vault_path: "?(.+?)"?$/m.exec(text);
-      return { stdout: JSON.stringify({ daemon: 'Stopped', service, vault: configured ? JSON.parse(`"${configured[1]}"`.replaceAll(/(?<!\\)\\(?!\\)/g, '\\\\')) : vault }) };
+      return { stdout: JSON.stringify({ daemon: 'Stopped', service, vault_problem: vaultProblem, vault: configured ? JSON.parse(`"${configured[1]}"`.replaceAll(/(?<!\\)\\(?!\\)/g, '\\\\')) : vault }) };
     }
     if (action === 'config' || action === 'verify') {
       const text = fs.existsSync(configFile) ? fs.readFileSync(configFile, 'utf8') : '';
@@ -309,4 +309,17 @@ test('a failed action does not block the next one', async (t) => {
   const { companion } = harness(t, { fail: { uninstall: 'Error: pending' } });
   await assert.rejects(companion.removeService(), /failed/);
   assert.equal((await companion.refresh()).stage, 'ready');
+});
+
+test('enabling is refused for a vault that cannot sync, before any service change', async (t) => {
+  const { calls, companion } = harness(t, { vaultProblem: 'Git remote not configured: origin', service: { installed: false, enabled: false, detail: 'Absent' } });
+  await assert.rejects(companion.setEnabled(true), /cannot sync yet: Git remote not configured/);
+  assert.deepEqual(mutations(calls), []);
+});
+
+test('a first enable checks the vault after seeding its config', async (t) => {
+  const { calls, companion, configFile } = harness(t, { withConfig: false, vaultProblem: 'Vault is not a Git repository' });
+  await assert.rejects(companion.setEnabled(true), /not a Git repository/);
+  assert.ok(fs.existsSync(configFile), 'the seeded config stays for this vault');
+  assert.deepEqual(mutations(calls), []);
 });

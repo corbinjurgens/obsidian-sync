@@ -853,3 +853,34 @@ class TestFailureRecovery:
             result = CliRunner().invoke(main, ["sync"])
         assert result.exit_code == 1
         assert "Injected failure" in result.output
+
+
+
+class TestUnixObsidianDetection:
+    @pytest.fixture
+    def daemon(self, tmp_path: Path) -> SyncDaemon:
+        return SyncDaemon(
+            SyncConfig(vault_path=str(tmp_path), lock_path=str(tmp_path / "daemon.lock"))
+        )
+
+    @pytest.mark.parametrize("system", ["Darwin", "Linux"])
+    @pytest.mark.parametrize(
+        "outcome,expected",
+        [
+            (subprocess.CompletedProcess([], 0, "123\n", ""), True),
+            (subprocess.CompletedProcess([], 1, "", ""), False),
+            (subprocess.CompletedProcess([], 2, "", "syntax"), True),
+            (FileNotFoundError("pgrep"), True),
+            (subprocess.TimeoutExpired(["pgrep"], 10), True),
+        ],
+    )
+    def test_detection_defers_whenever_pgrep_cannot_answer(
+        self, daemon: SyncDaemon, system: str, outcome: object, expected: bool
+    ) -> None:
+        with (
+            patch("obsidian_sync.daemon.platform.system", return_value=system),
+            patch("obsidian_sync.daemon.subprocess.run", side_effect=[outcome])
+            if isinstance(outcome, BaseException)
+            else patch("obsidian_sync.daemon.subprocess.run", return_value=outcome),
+        ):
+            assert daemon._is_obsidian_running() is expected

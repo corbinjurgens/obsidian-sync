@@ -7,9 +7,11 @@ import platform
 import re
 import shutil
 import subprocess
+import sys
 import time
 from dataclasses import asdict
 from pathlib import Path
+from xml.sax.saxutils import escape
 
 import click
 import yaml
@@ -26,6 +28,7 @@ from obsidian_sync.config import (
     save_config,
 )
 from obsidian_sync.daemon import LockError, SyncDaemon, _is_pid_alive, daemonize, setup_logging
+from obsidian_sync.git_ops import GitError, _run_git
 
 console = Console()
 
@@ -88,6 +91,21 @@ def _service_status() -> dict[str, bool | str | None]:
             return {"installed": None, "enabled": None, "detail": e.message}
         return {"installed": task.exists, "enabled": task.enabled, "detail": task.state}
     return {"installed": None, "enabled": None, "detail": f"Unsupported platform: {system}"}
+
+
+def _vault_problem(config: SyncConfig) -> str | None:
+    """Explain why the vault cannot sync to its configured remote, or return None."""
+    vault = Path(config.vault_path)
+    if not vault.is_dir():
+        return f"Vault folder not found: {vault}"
+    try:
+        if _run_git(vault, ["rev-parse", "--is-inside-work-tree"]).returncode != 0:
+            return f"Vault is not a Git repository: {vault}"
+        if _run_git(vault, ["remote", "get-url", config.sync.remote]).returncode != 0:
+            return f"Git remote not configured: {config.sync.remote}"
+    except GitError as e:
+        return str(e)
+    return None
 
 
 def _last_sync(log_lines: list[str]) -> str | None:
@@ -186,6 +204,7 @@ def status(ctx: click.Context, as_json: bool) -> None:
             "pid": pid,
             "service": _service_status(),
             "vault": config.vault_path,
+            "vault_problem": _vault_problem(config),
             "last_sync": _last_sync(log_lines),
             "last_log": log_lines[-1] if log_lines else None,
         }
@@ -451,7 +470,12 @@ def _install_launchd() -> None:
     dest_dir = Path.home() / "Library" / "LaunchAgents"
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / LAUNCHD_PLIST_NAME
-    rendered = source.read_text().replace("%HOME%", str(Path.home()))
+    # The interpreter path survives `uv tool install --force` and any uv bin directory.
+    rendered = (
+        source.read_text()
+        .replace("%HOME%", escape(str(Path.home())))
+        .replace("%PYTHON%", escape(sys.executable))
+    )
     dest.write_text(rendered)
     shutil.copystat(source, dest)
     console.print(f"[green]Installed: {dest}[/green]")

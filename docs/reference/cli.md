@@ -47,7 +47,9 @@ obsidian-sync status --json  # daemon, service, last sync and last log for tools
 ```
 
 `--json` reports `daemon`, `pid`, `service` (`installed`, `enabled`, `detail`),
-`vault`, `last_sync` and `last_log`. A service fact that cannot be read is `null`,
+`vault`, `vault_problem`, `last_sync` and `last_log`. `vault_problem` explains why
+the vault cannot sync (missing folder, not a Git repository, or the remote is not
+configured), or is `null`. A service fact that cannot be read is `null`,
 never a guess. `last_sync` is the newest successful cycle still in the log.
 
 ### `obsidian-sync sync`

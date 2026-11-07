@@ -213,7 +213,8 @@ immediately after the check.
 
 `plugin/` holds **Sync Companion** (`obsidian-sync-companion`), a desktop-only
 plugin that manages this companion from Obsidian's settings. It requires the
-Obsidian Git community plugin and only covers the time Obsidian is closed: the
+Obsidian Git community plugin, a vault that is a Git repository with the
+configured remote, and only covers the time Obsidian is closed: the
 companion still defers to a running Obsidian, and the plugin never runs `sync`,
 `start` or `stop`.
 

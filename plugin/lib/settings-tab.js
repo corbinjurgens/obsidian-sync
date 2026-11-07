@@ -91,6 +91,7 @@ module.exports = function makeSettingsTab(obsidian, plugin) {
       if (state.vaultMismatch) warn(`The companion config syncs another vault: ${state.settings.vault_path}`);
       if (state.stage === 'error') warn(`The companion reported a problem: ${state.error}`);
       if (state.status?.service.installed === null) warn(`Cannot read the service state: ${state.status.service.detail}`);
+      if (state.configExists && state.status?.vaultProblem) warn(`This vault cannot sync yet: ${state.status.vaultProblem}`);
     }
 
     renderToggle(root, state) {

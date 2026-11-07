@@ -20,6 +20,7 @@ test('a status report is normalized', () => {
     pid: '13608',
     service: { installed: true, enabled: true, detail: 'Running' },
     vault: REPORT.vault,
+    vaultProblem: null,
     lastSync: REPORT.last_sync,
     lastLog: REPORT.last_log,
   });
@@ -31,6 +32,12 @@ test('an unknown service stays unknown rather than reading as disabled', () => {
   assert.equal(parsed.service.enabled, null);
   assert.equal(parsed.service.detail, 'timed out');
   assert.equal(parseStatus(JSON.stringify({ daemon: 'Stopped' })).service.enabled, null);
+});
+
+test('a vault problem is reported, and its absence is null', () => {
+  assert.equal(parseStatus(JSON.stringify({ ...REPORT, vault_problem: 'Git remote not configured: origin' })).vaultProblem,
+    'Git remote not configured: origin');
+  assert.equal(parseStatus(JSON.stringify(REPORT)).vaultProblem, null);
 });
 
 test('a fresh install has no sync or log yet', () => {
