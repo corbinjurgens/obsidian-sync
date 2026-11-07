@@ -263,7 +263,12 @@ This installs the fork from `main`; the `obsidian-sync` name on PyPI is the
 upstream package without Windows support. If `uv` is missing, the tab shows the
 `uv` installer for your operating system without running it. A companion too old
 to report its service is stopped for the update and left off, so turn the toggle
-back on afterwards.
+back on afterwards. If the service cannot be stopped, the update is not started.
+
+On Windows, a task registered from an administrator terminal gives your normal
+account read access only, so the plugin, which runs without elevation, cannot
+disable, restart or remove it. Register the service from a normal terminal or from
+the plugin.
 
 The plugin is plain CommonJS with no runtime dependencies and no build step:
 `plugin/` is what gets installed. To deploy into `$WASABI_VAULT`, or another vault

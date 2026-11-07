@@ -218,15 +218,21 @@ test('updating a current companion leaves its service alone', async (t) => {
 });
 
 test('updating an old companion stops it and never turns it on', async (t) => {
-  const { calls, companion } = harness(t, { outdated: true, fail: { disable: 'Error: no task' } });
-  await companion.installCompanion();
+  const { calls, companion } = harness(t, { outdated: true });
+  await assert.rejects(companion.installCompanion(), /still has no plugin support/);
   assert.ok(calls.includes('disable'));
   assert.ok(!calls.includes('enable'));
 });
 
+test('an update is not started when the service cannot be stopped', async (t) => {
+  const { calls, companion } = harness(t, { outdated: true, fail: { disable: 'Disable-ScheduledTask : Access is denied.' } });
+  await assert.rejects(companion.installCompanion(), /Update not started.*administrator terminal/);
+  assert.ok(!calls.some((call) => call.startsWith('tool install')), 'uv never runs');
+});
+
 test('a failed update says the service stays stopped', async (t) => {
   const { companion } = harness(t, { outdated: true, fail: { uv: 'error: file in use' } });
-  await assert.rejects(companion.installCompanion(), /Update failed: error: file in use\. The service stays stopped/);
+  await assert.rejects(companion.installCompanion(), /Update failed: error: file in use\. The service is stopped\./);
 });
 
 test('saving is verified with the strict checks of scheduled startup', async (t) => {

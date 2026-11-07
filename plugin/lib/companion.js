@@ -194,22 +194,31 @@ class Companion {
     });
   }
 
-  // Replacing the tool while its Windows interpreter runs would fail, so stop it first.
   // An older companion cannot report its service, so the service stays off afterwards.
-  // A failed stop usually means nothing was running; if not, uv reports the file in use.
   installCompanion() {
     return this.exclusive(async () => {
       const uv = this.locate('uv');
       if (!uv) throw new Error('uv is not installed. Run the command shown in this tab first.');
       const before = await this.readState();
-      if (before.stage === 'outdated') await this.cli('disable').catch(() => {});
+      // Replacing the tool under a running daemon leaves a half-deleted install on Windows.
+      if (before.stage === 'outdated') {
+        try {
+          await this.cli('disable');
+        } catch (error) {
+          throw new Error(`Update not started, because the service could not be stopped: ${describeFailure(error)} To update anyway, stop it and run the command shown here in a terminal.`);
+        }
+      }
       try {
         await this.run(uv, commands.installArguments(), { timeout: 300_000, env: this.environment() });
       } catch (error) {
-        const stopped = before.stage === 'outdated' ? ' The service stays stopped until this succeeds.' : '';
+        const stopped = before.stage === 'outdated' ? ' The service is stopped.' : '';
         throw new Error(`Update failed: ${describeFailure(error)}.${stopped}`);
       }
-      return this.readState();
+      const after = await this.readState();
+      if (after.stage === 'outdated') {
+        throw new Error('Installed, but the published version still has no plugin support. Try again once it is released.');
+      }
+      return after;
     });
   }
 

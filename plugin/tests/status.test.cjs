@@ -66,6 +66,12 @@ test('failures describe the last stderr line, and timeouts say so', () => {
   assert.equal(describeFailure(new Error('plain')), 'plain');
 });
 
+test('a task this account cannot change is explained', () => {
+  const message = describeFailure({ stderr: 'Error: Disable-ScheduledTask : Access is denied.\n' });
+  assert.match(message, /^Error: Disable-ScheduledTask : Access is denied\. The service was registered from an administrator terminal/);
+  assert.doesNotMatch(describeFailure({ stderr: 'Error: Access is denied to the log' }), /administrator/);
+});
+
 test('paths compare across slash styles, and by case only on Windows', () => {
   assert.equal(samePath('C:/Users/corbi/wasabi/Notes', 'C:\\Users\\corbi\\wasabi\\notes\\', 'win32'), true);
   assert.equal(samePath('/Users/a/Notes', '/Users/a/notes', 'darwin'), false);

@@ -390,7 +390,9 @@ def _start_and_observe(record: Installation, state: TaskState) -> str:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             return f"pending (last scheduler state={state.state}, result={state.last_result})"
-        state = _task_state(timeout=remaining)
+        # The window bounds observation, not each query: a scheduler query given only
+        # the leftover fraction of a second times out and reads as a failed launch.
+        state = _task_state()
         if not _matches(state, record):
             raise click.ClickException("Task changed during startup.")
         pid = _read_pid(record.lock_path)

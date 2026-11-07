@@ -38,10 +38,13 @@ function isOutdatedFailure(error) {
   return /no such option:?\s*'?--json/i.test(String(error?.stderr ?? ''));
 }
 
+const ELEVATED_TASK = ' The service was registered from an administrator terminal, so this account cannot change it. Run the same obsidian-sync command from an administrator terminal.';
+
 function describeFailure(error) {
   const detail = String(error?.stderr ?? '').trim().split(/\r?\n/).filter(Boolean).at(-1);
   if (error?.killed) return `Timed out: ${detail || error.message}`;
-  return detail || error?.message || 'Unknown failure.';
+  const text = detail || error?.message || 'Unknown failure.';
+  return /ScheduledTask.*Access is denied/i.test(String(error?.stderr ?? '')) ? text + ELEVATED_TASK : text;
 }
 
 function comparablePath(value, platform) {
