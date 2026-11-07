@@ -178,9 +178,10 @@ operation manually before a later cycle can sync. It never aborts, resets or
 completes an unfinished operation for you.
 
 Failed Git inspections, staging, commits, pulls and pushes stay in the sync log
-without alerts. The first retry waits `sync.interval_seconds`; consecutive failed
-cycles double that delay up to 15 minutes (or the configured interval if longer).
-A successful cycle resets the delay. While Obsidian is open, the daemon checks
+without alerts. By default the first retry waits `sync.interval_seconds` and
+consecutive failed cycles double that delay up to 15 minutes (or the configured
+interval if longer); the `sync.backoff_*` settings change these values. A
+successful cycle resets the delay. While Obsidian is open, the daemon checks
 at the ordinary interval without clearing failure history. Resolve conflicts or
 unfinished operations manually through your existing Obsidian Git workflow;
 after resolution and closing Obsidian, the same daemon can resume syncing.
@@ -207,6 +208,70 @@ decoded with Windows' OEM code page, without localized headers or filtered
 no-match messages. Enumeration errors, timeouts and malformed snapshots defer
 sync and log the reason. This remains a snapshot, so a process may start or exit
 immediately after the check.
+
+## Obsidian Plugin
+
+`plugin/` holds **Sync Companion** (`obsidian-sync-companion`), a desktop-only
+plugin that manages this companion from Obsidian's settings. It requires the
+Obsidian Git community plugin and only covers the time Obsidian is closed: the
+companion still defers to a running Obsidian, and the plugin never runs `sync`,
+`start` or `stop`.
+
+The settings tab provides:
+
+- **Sync while Obsidian is closed**, which enables or disables the login service
+  on this device. Turning it on is refused unless Obsidian Git is enabled and
+  loaded. If Obsidian Git is disabled later, the tab and a notice warn that the
+  service is still enabled; the plugin does not turn it off for you.
+- Sync interval, remote, branch, pull strategy, commit message template and retry
+  settings (first delay, multiplier and longest delay).
+- Read-only status: companion, Obsidian Git, service, daemon, last sync, last log
+  line and config file. Last sync is the newest successful cycle still in the log.
+- Recent log output, and removal of the login service. Removal keeps the
+  companion, config, logs and vault.
+
+Each device has its own companion, config and service, so the plugin stores no
+settings of its own. On first use it creates a config for the open vault, taking
+the pull strategy from Obsidian Git's saved `merge` or `rebase` method.
+
+The plugin reads and writes the file the companion actually uses: the path
+captured in `windows-task.json` on Windows, otherwise the default. It edits only
+the keys that changed, so comments and other fields stay. Each save first copies
+the file to `config.yaml.bak-<timestamp>` beside it and is then read back through
+`obsidian-sync config --json`; if the companion reads anything else, the previous
+file is restored. Backups are not rotated. Saving restarts an enabled service
+(`disable`, then `enable`), because the daemon reads its config at startup. The
+remote must be a name rather than a URL, which keeps embedded credentials out of
+the config. An existing service is never reinstalled, so a reviewed or customized
+service definition stays in place. The toggle refuses a config for another vault.
+
+The executable is searched for in `UV_TOOL_BIN_DIR`, `XDG_BIN_HOME`,
+`~/.local/bin`, common macOS and Linux prefixes, then `PATH`, since a desktop app
+does not inherit a login shell's `PATH`. If the companion is missing, or too old to
+provide `--json`, the tab shows this command and offers to run it:
+
+```bash
+uv tool install --force git+https://github.com/corbinjurgens/obsidian-sync.git
+```
+
+This installs the fork from `main`; the `obsidian-sync` name on PyPI is the
+upstream package without Windows support. If `uv` is missing, the tab shows the
+`uv` installer for your operating system without running it. An update stops an
+enabled service and restores it afterwards. A companion too old to report its
+service is stopped and left off, so turn the toggle back on after that update.
+
+The plugin is plain CommonJS with no runtime dependencies and no build step:
+`plugin/` is what gets installed. To deploy into `$WASABI_VAULT`, or another vault
+with `--vault`, then reload the plugin:
+
+```bash
+cd plugin
+npm run install:vault
+npm test
+```
+
+The install script replaces only `main.js`, `manifest.json`, `styles.css` and
+`lib/`.
 
 ## Development
 

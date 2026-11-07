@@ -1,0 +1,9 @@
+{
+  "id": "obsidian-sync-companion",
+  "name": "Sync Companion",
+  "version": "0.1.0",
+  "minAppVersion": "1.5.0",
+  "description": "Manage the headless obsidian-sync companion that keeps a vault synced while Obsidian is closed.",
+  "isDesktopOnly": true,
+  "author": "Corbin Jurgens"
+}

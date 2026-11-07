@@ -4,7 +4,15 @@ Keep dated entries as verification history. Record implementation separately fro
 
 ## Unreleased
 
-No further implementation changes recorded.
+### What changed
+
+- Added `sync.backoff_initial_seconds`, `sync.backoff_multiplier` and `sync.backoff_max_seconds`. Their defaults keep the existing retry delays.
+- Added `status --json` and `config --json` for tools. Status reports the login service, last successful sync and last log line.
+- Added the Sync Companion Obsidian plugin under `plugin/`.
+
+### Not yet verified
+
+Loading a companion with these changes on a deployed machine, and driving a real service from the plugin. Plugin lifecycle checks used a fake service in a disposable Obsidian instance. macOS and Linux paths are covered by mocked tests only.
 
 ## 2026-11-07
 
