@@ -35,20 +35,28 @@ function harness(t, { service = { installed: true, enabled: false, detail: 'Disa
   }
   const calls = [];
   const run = async (file, args) => {
-    const action = file === 'uv' ? 'uv' : args[2];
+    const action = file === 'uv' ? 'uv' : args[4] === '--strict' ? 'verify' : args[2];
     calls.push(action === 'uv' ? args.join(' ') : action);
     if (fail[action]) throw Object.assign(new Error('failed'), { stderr: fail[action] });
     if (action === 'status') {
       if (outdated) throw Object.assign(new Error('failed'), { stderr: 'Error: No such option: --json' });
-      return { stdout: JSON.stringify({ daemon: 'Stopped', service, vault }) };
+      const text = fs.existsSync(configFile) ? fs.readFileSync(configFile, 'utf8') : '';
+      const configured = /vault_path: "?(.+?)"?$/m.exec(text);
+      return { stdout: JSON.stringify({ daemon: 'Stopped', service, vault: configured ? JSON.parse(`"${configured[1]}"`.replaceAll(/(?<!\\)\\(?!\\)/g, '\\\\')) : vault }) };
     }
-    if (action === 'config') {
+    if (action === 'config' || action === 'verify') {
       const text = fs.existsSync(configFile) ? fs.readFileSync(configFile, 'utf8') : '';
       const saved = structuredClone(settings);
       const interval = /interval_seconds: (\d+)/.exec(text);
       if (interval) saved.sync.interval_seconds = Number(interval[1]);
       const seededVault = /vault_path: "?(.+?)"?$/m.exec(text);
       if (seededVault) saved.vault_path = seededVault[1].replaceAll('\\\\', '\\');
+      for (const key of ['pull_strategy', 'remote', 'branch', 'backoff_initial_seconds', 'backoff_multiplier', 'backoff_max_seconds']) {
+        const match = new RegExp(`${key}: "?([^"\\n]+)"?`).exec(text);
+        if (match) saved.sync[key] = typeof saved.sync[key] === 'number' ? Number(match[1]) : match[1];
+      }
+      const template = /template: (".*")/.exec(text);
+      if (template) saved.commit.template = JSON.parse(template[1]);
       return { stdout: JSON.stringify(saved) };
     }
     if (action === 'enable') service.enabled = true;
@@ -68,7 +76,7 @@ function harness(t, { service = { installed: true, enabled: false, detail: 'Disa
 }
 
 function mutations(calls) {
-  return calls.filter((call) => !['status', 'config'].includes(call));
+  return calls.filter((call) => !['status', 'config', 'verify'].includes(call));
 }
 
 test('enabling is refused while Obsidian Git is inactive, with no CLI call', async (t) => {
@@ -203,17 +211,10 @@ test('an old companion asks for an update and keeps the form closed', async (t) 
   await assert.rejects(companion.setEnabled(true), /not ready/);
 });
 
-test('updating an enabled service stops it, installs, then restores it', async (t) => {
+test('updating a current companion leaves its service alone', async (t) => {
   const { calls, companion } = harness(t, { service: { installed: true, enabled: true, detail: 'Running' } });
   await companion.installCompanion();
-  assert.deepEqual(mutations(calls), ['disable', 'tool install --force git+https://github.com/corbinjurgens/obsidian-sync.git', 'enable']);
-});
-
-test('updating a disabled service leaves it disabled', async (t) => {
-  const { calls, companion } = harness(t);
-  await companion.installCompanion();
-  assert.ok(!calls.includes('enable'));
-  assert.ok(!calls.includes('disable'));
+  assert.deepEqual(mutations(calls), ['tool install --force git+https://github.com/corbinjurgens/obsidian-sync.git']);
 });
 
 test('updating an old companion stops it and never turns it on', async (t) => {
@@ -221,6 +222,67 @@ test('updating an old companion stops it and never turns it on', async (t) => {
   await companion.installCompanion();
   assert.ok(calls.includes('disable'));
   assert.ok(!calls.includes('enable'));
+});
+
+test('a failed update says the service stays stopped', async (t) => {
+  const { companion } = harness(t, { outdated: true, fail: { uv: 'error: file in use' } });
+  await assert.rejects(companion.installCompanion(), /Update failed: error: file in use\. The service stays stopped/);
+});
+
+test('saving is verified with the strict checks of scheduled startup', async (t) => {
+  const { calls, companion, configFile } = harness(t, { service: { installed: true, enabled: true, detail: 'Running' }, fail: { verify: 'Error: Invalid config value: log.max_size_mb' } });
+  const before = fs.readFileSync(configFile, 'utf8');
+  await assert.rejects(companion.apply(FORM), /Config not changed: Error: Invalid config value/);
+  assert.equal(fs.readFileSync(configFile, 'utf8'), before);
+  assert.ok(!calls.includes('disable'), 'the service is not stopped');
+});
+
+test('saving restores the file when an unrelated field changed', async (t) => {
+  const { companion, configFile } = harness(t);
+  const before = fs.readFileSync(configFile, 'utf8');
+  const run = companion.run;
+  companion.run = async (file, args, options) => {
+    const result = await run(file, args, options);
+    if (args[4] !== '--strict') return result;
+    const saved = JSON.parse(result.stdout);
+    saved.sync.branch = 'lost';
+    return { stdout: JSON.stringify(saved) };
+  };
+  await assert.rejects(companion.apply(FORM), /read the file differently/);
+  assert.equal(fs.readFileSync(configFile, 'utf8'), before);
+});
+
+test('a tilde vault path is compared after expansion', async (t) => {
+  const { companion, vault } = harness(t);
+  const run = companion.run;
+  companion.run = async (file, args, options) => {
+    const result = await run(file, args, options);
+    if (args[2] !== 'config') return result;
+    return { stdout: JSON.stringify({ ...JSON.parse(result.stdout), vault_path: '~/vault' }) };
+  };
+  const state = await companion.refresh();
+  assert.equal(state.status.vault, vault);
+  assert.equal(state.vaultMismatch, false);
+});
+
+test('before a config exists the form offers the Obsidian Git pull method', async (t) => {
+  const { companion, vault } = harness(t, { withConfig: false });
+  fs.writeFileSync(path.join(vault, '.obsidian', 'plugins', 'obsidian-git', 'data.json'), '{"syncMethod":"rebase"}');
+  assert.equal((await companion.refresh()).settings.sync.pull_strategy, 'rebase');
+});
+
+test('removing a service with a custom config is refused', async (t) => {
+  const { calls, companion, home } = harness(t, { platform: 'win32' });
+  const metadata = path.join(home, '.config', 'obsidian-sync', 'windows-task.json');
+  fs.writeFileSync(metadata, JSON.stringify({ config_path: path.join(home, 'custom.yaml') }));
+  await assert.rejects(companion.removeService(), /custom config/);
+  assert.deepEqual(mutations(calls), []);
+});
+
+test('removing a default service runs uninstall', async (t) => {
+  const { calls, companion } = harness(t);
+  await companion.removeService();
+  assert.deepEqual(mutations(calls), ['uninstall']);
 });
 
 test('installing without uv is refused', async (t) => {

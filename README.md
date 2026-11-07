@@ -238,12 +238,16 @@ The plugin reads and writes the file the companion actually uses: the path
 captured in `windows-task.json` on Windows, otherwise the default. It edits only
 the keys that changed, so comments and other fields stay. Each save first copies
 the file to `config.yaml.bak-<timestamp>` beside it and is then read back through
-`obsidian-sync config --json`; if the companion reads anything else, the previous
-file is restored. Backups are not rotated. Saving restarts an enabled service
+`obsidian-sync config --json --strict`, the checks of scheduled startup; if that
+fails, or any field reads differently than expected, the previous file is restored.
+Backups are not rotated. Saving restarts an enabled service
 (`disable`, then `enable`), because the daemon reads its config at startup. The
 remote must be a name rather than a URL, which keeps embedded credentials out of
-the config. An existing service is never reinstalled, so a reviewed or customized
-service definition stays in place. The toggle refuses a config for another vault.
+the config. The toggle never reinstalls an existing service, so a customized
+definition stays in place, and it refuses a config for another vault. Removing the
+service deletes that definition, and the next enable creates the standard one.
+Removal is refused for a Windows service with a custom config, whose path it would
+forget; use `obsidian-sync uninstall` in a terminal there.
 
 The executable is searched for in `UV_TOOL_BIN_DIR`, `XDG_BIN_HOME`,
 `~/.local/bin`, common macOS and Linux prefixes, then `PATH`, since a desktop app
@@ -256,13 +260,14 @@ uv tool install --force git+https://github.com/corbinjurgens/obsidian-sync.git
 
 This installs the fork from `main`; the `obsidian-sync` name on PyPI is the
 upstream package without Windows support. If `uv` is missing, the tab shows the
-`uv` installer for your operating system without running it. An update stops an
-enabled service and restores it afterwards. A companion too old to report its
-service is stopped and left off, so turn the toggle back on after that update.
+`uv` installer for your operating system without running it. A companion too old
+to report its service is stopped for the update and left off, so turn the toggle
+back on afterwards.
 
 The plugin is plain CommonJS with no runtime dependencies and no build step:
 `plugin/` is what gets installed. To deploy into `$WASABI_VAULT`, or another vault
-with `--vault`, then reload the plugin:
+with `--vault`, then restart Obsidian or reload its window, since `lib/` modules
+stay cached across a plugin toggle:
 
 ```bash
 cd plugin

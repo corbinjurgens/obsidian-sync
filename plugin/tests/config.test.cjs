@@ -158,6 +158,12 @@ test('invalid numbers are rejected with their labels', () => {
   assert.equal(validateForm({ ...FORM, interval: '' }).errors.length, 1);
 });
 
+test('values the companion could not hold or would misread are rejected', () => {
+  assert.equal(validateForm({ ...FORM, backoffMax: '1.5e21' }).errors.length, 1);
+  assert.equal(validateForm({ ...FORM, backoffMultiplier: '1.7e308' }).errors.length, 1);
+  assert.equal(validateForm({ ...FORM, backoffMultiplier: 'Infinity' }).errors.length, 1);
+});
+
 test('a remote URL is refused so credentials cannot land in the config', () => {
   for (const remote of ['https://user:token@github.com/x.git', 'git@github.com:x.git', '-upload-pack=x', '']) {
     assert.match(validateForm({ ...FORM, remote }).errors.join(' '), /remote name/);

@@ -571,6 +571,8 @@ class TestRetryBackoff:
             (60, "ffff", [60, 90, 135, 200], {"backoff_multiplier": 1.5, "backoff_max_seconds": 200}),
             (60, "fff", [60, 60, 60], {"backoff_multiplier": 1.0}),
             (60, "ff", [60, 60], {"backoff_initial_seconds": 500, "backoff_max_seconds": 30}),
+            (60, "ffff", [1, 2, 3, 5], {"backoff_initial_seconds": 1, "backoff_multiplier": 1.5}),
+            (60, "fff", [60, 900, 900], {"backoff_multiplier": 1.7e308}),
         ],
     )
     def test_delays_cap_reset_and_preserve_history_during_deferral(

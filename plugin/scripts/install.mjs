@@ -60,7 +60,7 @@ try {
   fs.mkdirSync(target, { recursive: true });
   for (const name of owned) mirror(path.join(source, name), path.join(target, name));
   console.log(`Installed Sync Companion at ${target} (${changed} entries changed).`);
-  console.log('Reload the plugin or restart Obsidian after code updates.');
+  console.log('Restart Obsidian or reload its window after code updates.');
 } catch (error) {
   console.error(`install: ${error.message}`);
   process.exitCode = 1;

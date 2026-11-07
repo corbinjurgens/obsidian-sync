@@ -15,6 +15,7 @@ const SERVICE_MANAGERS = {
 const ACTIONS = {
   status: { args: ['status', '--json'], timeout: 60_000 },
   config: { args: ['config', '--json'], timeout: 30_000 },
+  verify: { args: ['config', '--json', '--strict'], timeout: 30_000 },
   log: { args: ['log', '-n', '50'], timeout: 30_000 },
   install: { args: ['install'], timeout: 120_000 },
   enable: { args: ['enable'], timeout: 120_000 },

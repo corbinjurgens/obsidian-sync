@@ -87,13 +87,14 @@ class Companion {
       const status = parseStatus((await this.cli('status')).stdout);
       const settings = JSON.parse((await this.cli('config')).stdout);
       const configExists = this.exists(base.configPath);
+      if (!configExists) settings.sync.pull_strategy = this.gitPullStrategy() ?? settings.sync.pull_strategy;
       return {
         ...base,
         stage: 'ready',
         status,
         settings,
         configExists,
-        vaultMismatch: configExists && !samePath(settings.vault_path, this.vaultPath, this.platform),
+        vaultMismatch: configExists && !samePath(status.vault ?? '', this.vaultPath, this.platform),
       };
     } catch (error) {
       if (isOutdatedFailure(error)) return { ...base, stage: 'outdated', install: this.installInstructions() };
@@ -105,27 +106,25 @@ class Companion {
     return this.exclusive(() => this.readState());
   }
 
-  async seedConfig() {
-    const updates = { vault_path: this.vaultPath };
-    const gitSettings = path.join(this.vaultPath, this.app.vault.configDir, 'plugins', OBSIDIAN_GIT_ID, 'data.json');
+  gitPullStrategy() {
+    const settings = path.join(this.vaultPath, this.app.vault.configDir, 'plugins', OBSIDIAN_GIT_ID, 'data.json');
     try {
-      const strategy = obsidianGitPullStrategy(this.fileSystem.readFileSync(gitSettings, 'utf8'));
-      if (strategy) updates['sync.pull_strategy'] = strategy;
+      return obsidianGitPullStrategy(this.fileSystem.readFileSync(settings, 'utf8'));
     } catch (error) {
-      if (error.code !== 'ENOENT') throw error;
+      if (error.code === 'ENOENT') return null;
+      throw error;
     }
-    await this.writeVerified(updates);
   }
 
-  async writeVerified(updates) {
+  // Checked the way scheduled startup checks it, against every field and not only the
+  // changed ones, so a save cannot leave a config the service would refuse or misread.
+  async writeVerified(updates, before) {
     const configPath = this.configPath();
     const written = config.writeConfig(configPath, updates, { fileSystem: this.fileSystem });
     try {
-      const saved = JSON.parse((await this.cli('config')).stdout);
-      for (const [field, value] of Object.entries(updates)) {
-        if (config.readField(saved, field) !== value) {
-          throw new Error(`The companion read ${field} differently than it was written.`);
-        }
+      const saved = JSON.parse((await this.cli('verify')).stdout);
+      if (JSON.stringify(saved) !== JSON.stringify(config.withUpdates(before, updates))) {
+        throw new Error('The companion read the file differently than it was written.');
       }
       return written;
     } catch (error) {
@@ -149,7 +148,10 @@ class Companion {
       if (state.vaultMismatch) {
         throw new Error(`The companion config syncs another vault: ${state.settings.vault_path}. Run obsidian-sync config --edit to change it.`);
       }
-      if (!state.configExists) await this.seedConfig();
+      if (!state.configExists) {
+        const strategy = { 'sync.pull_strategy': state.settings.sync.pull_strategy };
+        await this.writeVerified({ vault_path: this.vaultPath, ...strategy }, state.settings);
+      }
       // `install` replaces a macOS plist and a reviewed machine definition may be registered.
       if (!state.status.service.installed) await this.cli('install');
       await this.cli('enable');
@@ -172,7 +174,7 @@ class Companion {
       ));
       if (!state.configExists) updates.vault_path = this.vaultPath;
       if (Object.keys(updates).length === 0) return { state, changed: false, restarted: false };
-      const written = await this.writeVerified(updates);
+      const written = await this.writeVerified(updates, state.settings);
       let restarted = false;
       if (state.status.service.enabled) {
         if (this.gitActive()) {
@@ -190,23 +192,30 @@ class Companion {
   }
 
   // Replacing the tool while its Windows interpreter runs would fail, so stop it first.
-  // An older companion cannot report its service, so it is stopped and left off.
+  // An older companion cannot report its service, so the service stays off afterwards.
+  // A failed stop usually means nothing was running; if not, uv reports the file in use.
   installCompanion() {
     return this.exclusive(async () => {
       const uv = this.locate('uv');
       if (!uv) throw new Error('uv is not installed. Run the command shown in this tab first.');
       const before = await this.readState();
-      const wasEnabled = before.stage === 'ready' && before.status.service.enabled === true;
-      if (wasEnabled) await this.cli('disable');
       if (before.stage === 'outdated') await this.cli('disable').catch(() => {});
-      await this.run(uv, commands.installArguments(), { timeout: 300_000, env: this.environment() });
-      if (wasEnabled && this.gitActive()) await this.cli('enable');
+      try {
+        await this.run(uv, commands.installArguments(), { timeout: 300_000, env: this.environment() });
+      } catch (error) {
+        const stopped = before.stage === 'outdated' ? ' The service stays stopped until this succeeds.' : '';
+        throw new Error(`Update failed: ${describeFailure(error)}.${stopped}`);
+      }
       return this.readState();
     });
   }
 
+  // Uninstalling forgets a custom config's path, and the next enable would start a new config.
   removeService() {
     return this.exclusive(async () => {
+      if (this.configPath() !== config.defaultConfigPath(this.home)) {
+        throw new Error(`This service uses a custom config: ${this.configPath()}. Run obsidian-sync uninstall in a terminal.`);
+      }
       await this.cli('uninstall');
       return this.readState();
     });

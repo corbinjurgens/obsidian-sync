@@ -1,6 +1,7 @@
 """Tests for the obsidian-sync CLI using click.testing.CliRunner."""
 
 import json
+import subprocess
 from pathlib import Path
 
 import click
@@ -280,3 +281,80 @@ class TestJsonOutput:
         assert config["vault_path"] == "/vault"
         assert config["sync"]["interval_seconds"] == 5
         assert config["sync"]["backoff_max_seconds"] == 900
+
+    def test_config_strict_applies_scheduled_startup_checks(self, tmp_path: Path) -> None:
+        path = tmp_path / "config.yaml"
+        path.write_text("vault_path: /vault\nlog:\n  max_size_mb: 10.5\n", encoding="utf-8")
+        lenient = CliRunner().invoke(main, ["--config", str(path), "config", "--json"])
+        strict = CliRunner().invoke(main, ["--config", str(path), "config", "--json", "--strict"])
+        assert lenient.exit_code == 0
+        assert strict.exit_code == 1
+        assert "log.max_size_mb" in strict.output
+
+    def test_config_strict_reports_broken_yaml_cleanly(self, tmp_path: Path) -> None:
+        path = tmp_path / "config.yaml"
+        path.write_text("sync: [\n", encoding="utf-8")
+        result = CliRunner().invoke(main, ["--config", str(path), "config", "--json", "--strict"])
+        assert result.exit_code == 1
+        assert result.exception is None or isinstance(result.exception, SystemExit)
+
+    def test_missing_service_manager_reads_as_unknown(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def missing(*_: object, **__: object) -> None:
+            raise FileNotFoundError("systemctl")
+
+        monkeypatch.setattr(cli_module.platform, "system", lambda: "Linux")
+        monkeypatch.setattr(cli_module.Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(cli_module.subprocess, "run", missing)
+        assert cli_module._service_status()["enabled"] is None
+
+    @pytest.mark.parametrize(
+        "code,stdout,expected",
+        [(0, "enabled\n", True), (1, "disabled\n", False), (1, "", None)],
+    )
+    def test_systemd_answers_map_to_enabled(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        code: int,
+        stdout: str,
+        expected: bool | None,
+    ) -> None:
+        monkeypatch.setattr(cli_module.platform, "system", lambda: "Linux")
+        monkeypatch.setattr(cli_module.Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            cli_module.subprocess,
+            "run",
+            lambda *_, **__: subprocess.CompletedProcess([], code, stdout, ""),
+        )
+        assert cli_module._service_status()["enabled"] is expected
+
+    def test_launchd_disable_persists_across_logins(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        plist = tmp_path / "Library" / "LaunchAgents" / cli_module.LAUNCHD_PLIST_NAME
+        plist.parent.mkdir(parents=True)
+        plist.write_text("", encoding="utf-8")
+        commands: list[list[str]] = []
+        monkeypatch.setattr(cli_module.platform, "system", lambda: "Darwin")
+        monkeypatch.setattr(cli_module.Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            cli_module.subprocess,
+            "run",
+            lambda command, **_: commands.append(command),
+        )
+        CliRunner().invoke(main, ["disable"])
+        CliRunner().invoke(main, ["enable"])
+        assert commands == [
+            ["launchctl", "unload", "-w", str(plist)],
+            ["launchctl", "load", "-w", str(plist)],
+        ]
+
+    def test_log_prints_brackets_literally(self, tmp_path: Path) -> None:
+        config_path = _make_config_file(tmp_path)
+        line = "2026-11-07 10:00:00,100 [INFO] Committed: x [host=a] [/tmp/x] [rejected]"
+        (tmp_path / "sync.log").write_text(line + "\n", encoding="utf-8")
+        result = CliRunner().invoke(main, ["--config", str(config_path), "log"])
+        assert result.exit_code == 0, result.output
+        assert line in result.output

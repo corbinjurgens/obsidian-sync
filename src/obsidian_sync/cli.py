@@ -12,6 +12,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 import click
+import yaml
 from rich.console import Console
 from rich.table import Table
 
@@ -57,23 +58,29 @@ def _daemon_status(lock_path: Path) -> tuple[str, str | None]:
     return "Stale lock", pid
 
 
+def _probe(command: list[str]) -> subprocess.CompletedProcess[str] | None:
+    """Run a read-only service query, returning None when it cannot answer."""
+    try:
+        return subprocess.run(command, capture_output=True, text=True, check=False, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
 def _service_status() -> dict[str, bool | str | None]:
     """Report the login service without changing it; None marks an unknown fact."""
     system = platform.system()
     if system == "Darwin":
         plist = Path.home() / "Library" / "LaunchAgents" / LAUNCHD_PLIST_NAME
-        loaded = subprocess.run(
-            ["launchctl", "list", LAUNCHD_LABEL], capture_output=True, check=False
-        )
-        return {"installed": plist.exists(), "enabled": loaded.returncode == 0, "detail": "launchd"}
+        loaded = _probe(["launchctl", "list", LAUNCHD_LABEL])
+        enabled = None if loaded is None else loaded.returncode == 0
+        return {"installed": plist.exists(), "enabled": enabled, "detail": "launchd"}
     if system == "Linux":
         unit = Path.home() / ".config" / "systemd" / "user" / SYSTEMD_UNIT_NAME
-        enabled = subprocess.run(
-            ["systemctl", "--user", "is-enabled", SYSTEMD_UNIT_NAME],
-            capture_output=True,
-            check=False,
-        )
-        return {"installed": unit.exists(), "enabled": enabled.returncode == 0, "detail": "systemd"}
+        queried = _probe(["systemctl", "--user", "is-enabled", SYSTEMD_UNIT_NAME])
+        # is-enabled names the state on stdout; a bus failure prints nothing there.
+        answer = queried.stdout.strip() if queried is not None else ""
+        enabled = queried.returncode == 0 if queried is not None and answer else None
+        return {"installed": unit.exists(), "enabled": enabled, "detail": "systemd"}
     if system == "Windows":
         try:
             task = windows_service._task_state()
@@ -260,15 +267,18 @@ def log(ctx: click.Context, tail: bool, since: str | None, lines: int) -> None:
     else:
         all_lines = log_path.read_text(encoding="utf-8").strip().splitlines()
         for line in all_lines[-lines:]:
-            console.print(line)
+            console.print(line, markup=False, highlight=False)
 
 
 @main.command()
 @click.option("--init", "do_init", is_flag=True, default=False, help="Create default config.")
 @click.option("--edit", "do_edit", is_flag=True, default=False, help="Open config in $EDITOR.")
 @click.option("--json", "as_json", is_flag=True, default=False, help="Print JSON for tools.")
+@click.option(
+    "--strict", is_flag=True, default=False, help="Apply the checks of scheduled startup."
+)
 @click.pass_context
-def config(ctx: click.Context, do_init: bool, do_edit: bool, as_json: bool) -> None:
+def config(ctx: click.Context, do_init: bool, do_edit: bool, as_json: bool, strict: bool) -> None:
     """Show or initialize configuration."""
     config_path = ctx.obj["config_path"] or DEFAULT_CONFIG_PATH.expanduser()
 
@@ -291,7 +301,10 @@ def config(ctx: click.Context, do_init: bool, do_edit: bool, as_json: bool) -> N
         subprocess.run([editor, str(config_path)], check=False)
         return
 
-    cfg = load_config(ctx.obj["config_path"])
+    try:
+        cfg = load_config(ctx.obj["config_path"], required=strict)
+    except (ValueError, yaml.YAMLError) as e:
+        raise click.ClickException(str(e).replace("\n", " ")) from e
     if as_json:
         click.echo(json.dumps(asdict(cfg)))
         return
@@ -361,7 +374,7 @@ def enable(ctx: click.Context) -> None:
         plist = Path.home() / "Library" / "LaunchAgents" / LAUNCHD_PLIST_NAME
         if not plist.exists():
             raise click.ClickException("Service not installed. Run 'install' first.")
-        subprocess.run(["launchctl", "load", str(plist)], check=True)
+        subprocess.run(["launchctl", "load", "-w", str(plist)], check=True)
         console.print("[green]Service enabled (launchd)[/green]")
     elif system == "Linux":
         subprocess.run(["systemctl", "--user", "enable", SYSTEMD_UNIT_NAME], check=True)
@@ -384,7 +397,8 @@ def disable(ctx: click.Context) -> None:
     if system == "Darwin":
         plist = Path.home() / "Library" / "LaunchAgents" / LAUNCHD_PLIST_NAME
         if plist.exists():
-            subprocess.run(["launchctl", "unload", str(plist)], check=False)
+            # -w records the override; without it launchd loads the plist at next login.
+            subprocess.run(["launchctl", "unload", "-w", str(plist)], check=False)
         console.print("[green]Service disabled (launchd)[/green]")
     elif system == "Linux":
         subprocess.run(["systemctl", "--user", "stop", SYSTEMD_UNIT_NAME], check=False)

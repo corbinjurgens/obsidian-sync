@@ -3,6 +3,7 @@
 import csv
 import io
 import logging
+import math
 import os
 import platform
 import signal
@@ -88,8 +89,8 @@ class SyncDaemon:
                     delay = interval
                 else:
                     delay = retry_delay
-                    retry_delay = min(
-                        int(retry_delay * self.config.sync.backoff_multiplier), max_retry_delay
+                    retry_delay = math.ceil(
+                        min(retry_delay * self.config.sync.backoff_multiplier, max_retry_delay)
                     )
                 logger.info("Next sync in %d seconds", delay)
                 self._sleep(delay)

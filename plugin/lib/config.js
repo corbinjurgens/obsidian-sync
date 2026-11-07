@@ -18,18 +18,32 @@ function readField(config, field) {
   return field.split('.').reduce((value, key) => value?.[key], config);
 }
 
+function withUpdates(config, updates) {
+  const next = structuredClone(config);
+  for (const [field, value] of Object.entries(updates)) {
+    const keys = field.split('.');
+    const last = keys.pop();
+    keys.reduce((node, key) => node[key], next)[last] = value;
+  }
+  return next;
+}
+
+function defaultConfigPath(home) {
+  return path.join(home, '.config', 'obsidian-sync', 'config.yaml');
+}
+
 // Windows installs may capture a custom config; every other command must follow it.
 function resolveConfigPath({ platform, home, readText = (file) => fs.readFileSync(file, 'utf8') }) {
-  const directory = path.join(home, '.config', 'obsidian-sync');
+  const standard = defaultConfigPath(home);
   if (platform === 'win32') {
     try {
-      const captured = JSON.parse(readText(path.join(directory, 'windows-task.json'))).config_path;
+      const captured = JSON.parse(readText(path.join(path.dirname(standard), 'windows-task.json'))).config_path;
       if (typeof captured === 'string' && captured) return captured;
     } catch (error) {
       if (error.code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error;
     }
   }
-  return path.join(directory, 'config.yaml');
+  return standard;
 }
 
 function scalar(value) {
@@ -134,7 +148,7 @@ function restoreConfig(configPath, written, { fileSystem = fs } = {}) {
 
 function positiveInteger(text, label, errors, minimum = 1) {
   const value = Number(text);
-  if (!Number.isInteger(value) || value < minimum) {
+  if (!Number.isSafeInteger(value) || value < minimum) {
     errors.push(`${label} must be a whole number of at least ${minimum}.`);
   }
   return value;
@@ -153,8 +167,8 @@ function validateForm(form) {
     'sync.backoff_max_seconds': positiveInteger(form.backoffMax, 'Longest retry delay', errors),
     'commit.template': form.template,
   };
-  if (!(values['sync.backoff_multiplier'] >= 1) || !Number.isFinite(values['sync.backoff_multiplier'])) {
-    errors.push('Retry multiplier must be a number of at least 1.');
+  if (!(values['sync.backoff_multiplier'] >= 1 && values['sync.backoff_multiplier'] <= 1000)) {
+    errors.push('Retry multiplier must be a number from 1 to 1000.');
   }
   if (!['rebase', 'merge', 'ff-only'].includes(form.pullStrategy)) {
     errors.push('Pull strategy must be rebase, merge or ff-only.');
@@ -188,11 +202,13 @@ function formFromConfig(config) {
 module.exports = {
   FIELDS,
   backupPath,
+  defaultConfigPath,
   formFromConfig,
   patchConfigText,
   readField,
   resolveConfigPath,
   restoreConfig,
   validateForm,
+  withUpdates,
   writeConfig,
 };

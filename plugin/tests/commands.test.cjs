@@ -12,6 +12,7 @@ test('every managed action passes the config before its subcommand', () => {
   const expected = {
     status: ['status', '--json'],
     config: ['config', '--json'],
+    verify: ['config', '--json', '--strict'],
     log: ['log', '-n', '50'],
     install: ['install'],
     enable: ['enable'],

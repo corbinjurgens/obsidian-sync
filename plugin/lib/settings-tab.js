@@ -38,6 +38,9 @@ module.exports = function makeSettingsTab(obsidian, plugin) {
     }
 
     display() {
+      // Reopening shows the config as it is now, including edits made elsewhere.
+      this.form = null;
+      this.log = null;
       this.render();
       this.perform('Reading companion status', () => plugin.companion.refresh());
     }
@@ -101,11 +104,7 @@ module.exports = function makeSettingsTab(obsidian, plugin) {
           .setDisabled(!known || Boolean(this.busy))
           .onChange((value) => this.perform(
             value ? 'Enabling the service' : 'Disabling the service',
-            async () => {
-              await plugin.companion.setEnabled(value);
-              // The first enable seeds a config, so defaults in the form are stale.
-              if (!state.configExists) this.form = null;
-            },
+            () => plugin.companion.setEnabled(value),
           )));
     }
 
@@ -213,7 +212,7 @@ module.exports = function makeSettingsTab(obsidian, plugin) {
       if (!state.status.service.installed) return;
       new Setting(root)
         .setName('Remove the login service')
-        .setDesc('Keeps the companion, its config, its logs and the vault.')
+        .setDesc('Keeps the companion, its config, its logs and the vault. A customized service definition is deleted; turning sync on again creates the standard one.')
         .addButton((button) => button.setButtonText('Remove').setWarning().setDisabled(Boolean(this.busy)).onClick(() => {
           new ConfirmModal(this.app, `Remove the ${plugin.companion.serviceManager()} service for this account?`, () => {
             this.perform('Removing the service', () => plugin.companion.removeService());
