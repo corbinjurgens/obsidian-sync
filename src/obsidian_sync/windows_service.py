@@ -316,7 +316,10 @@ def install_task(config_path: Path | None) -> None:
             f"-Argument {_quote(_arguments(record))} "
             f"-WorkingDirectory {_quote(str(config_path.parent))}\n"
             "$trigger = New-ScheduledTaskTrigger -AtLogOn -User $sid\n"
-            "$principal = New-ScheduledTaskPrincipal -UserId $sid -LogonType Interactive "
+            # Joes, whose user and computer share a name, rejects the SID principal with
+            # (17,8):UserId. The qualified name is stored as the same SID on other hosts.
+            "$account = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name\n"
+            "$principal = New-ScheduledTaskPrincipal -UserId $account -LogonType Interactive "
             "-RunLevel Limited\n"
             "$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries "
             "-DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) "

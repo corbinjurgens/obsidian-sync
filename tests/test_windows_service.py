@@ -120,6 +120,8 @@ def test_install_captures_identity_and_disabled_per_user_task(
     assert "WindowsIdentity]::GetCurrent().User.Value" in script
     assert "-LogonType Interactive -RunLevel Limited" in script
     assert "-User $sid" in script
+    assert "WindowsIdentity]::GetCurrent().Name" in script
+    assert "New-ScheduledTaskPrincipal -UserId $account " in script
     assert "$settings.Enabled = $false" in script
     assert "-ExecutionTimeLimit ([TimeSpan]::Zero)" in script
     assert "-AllowStartIfOnBatteries -DontStopIfGoingOnBatteries" in script
